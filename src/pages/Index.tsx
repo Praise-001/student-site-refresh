@@ -1,11 +1,22 @@
-// Update this page (the content is just a fallback if you fail to update the page)
+import { useState, useEffect } from "react";
+import { AppHeader } from "@/components/AppHeader";
+import { AppSidebar } from "@/components/AppSidebar";
+import { MainContent } from "@/components/MainContent";
 
 const Index = () => {
+  const [activeTab, setActiveTab] = useState<"questions" | "chat">("questions");
+
+  // Set dark mode by default for the sleek look
+  useEffect(() => {
+    document.documentElement.classList.add("dark");
+  }, []);
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background">
-      <div className="text-center">
-        <h1 className="mb-4 text-4xl font-bold">Welcome to Your Blank App</h1>
-        <p className="text-xl text-muted-foreground">Start building your amazing project here!</p>
+    <div className="h-screen flex flex-col bg-background">
+      <AppHeader activeTab={activeTab} onTabChange={setActiveTab} />
+      <div className="flex flex-1 overflow-hidden">
+        <AppSidebar />
+        <MainContent activeTab={activeTab} />
       </div>
     </div>
   );
