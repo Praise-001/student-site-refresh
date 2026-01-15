@@ -1,6 +1,15 @@
-import { BookOpen, MessageCircle, History, Settings } from "lucide-react";
+import { BookOpen, MessageCircle, History, Settings, Sun, Moon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  DropdownMenuSeparator,
+  DropdownMenuLabel,
+} from "@/components/ui/dropdown-menu";
+import { useTheme } from "next-themes";
 
 type Tab = "generate" | "practice" | "chat" | "history";
 
@@ -17,6 +26,8 @@ const tabs = [
 ];
 
 export const Header = ({ activeTab, onTabChange }: HeaderProps) => {
+  const { theme, setTheme } = useTheme();
+
   return (
     <header className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/80 backdrop-blur-xl">
       <div className="max-w-6xl mx-auto px-4 sm:px-6">
@@ -27,7 +38,7 @@ export const Header = ({ activeTab, onTabChange }: HeaderProps) => {
               <BookOpen className="w-5 h-5 text-primary" />
             </div>
             <h1 className="text-xl font-bold text-foreground">
-              Prep<span className="text-primary">Wise</span>
+              Study<span className="text-primary">Wiz</span>
             </h1>
           </div>
 
@@ -50,10 +61,34 @@ export const Header = ({ activeTab, onTabChange }: HeaderProps) => {
             ))}
           </nav>
 
-          {/* Settings */}
-          <Button variant="ghost" size="icon" className="rounded-xl">
-            <Settings className="w-5 h-5 text-muted-foreground" />
-          </Button>
+          {/* Settings Dropdown */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="rounded-xl">
+                <Settings className="w-5 h-5 text-muted-foreground" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuLabel>Settings</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+                className="flex items-center gap-2 cursor-pointer"
+              >
+                {theme === "dark" ? (
+                  <>
+                    <Sun className="w-4 h-4" />
+                    <span>Light Mode</span>
+                  </>
+                ) : (
+                  <>
+                    <Moon className="w-4 h-4" />
+                    <span>Dark Mode</span>
+                  </>
+                )}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
         {/* Mobile Navigation */}
