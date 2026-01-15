@@ -9,7 +9,7 @@ export const AppHeader = ({ activeTab, onTabChange }: AppHeaderProps) => {
   return (
     <header className="flex items-center justify-between px-6 h-16 border-b border-border bg-card">
       <h1 className="text-xl font-serif font-semibold italic text-primary">
-        PrepWise
+        StudyWiz
       </h1>
       
       <nav className="flex items-center gap-1">
