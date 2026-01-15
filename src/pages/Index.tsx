@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Header } from "@/components/Header";
 import { WelcomeHero } from "@/components/WelcomeHero";
-import { GeneratorPanel } from "@/components/GeneratorPanel";
+import { GeneratorPanel, GeneratedQuizData } from "@/components/GeneratorPanel";
 import { PracticeView } from "@/components/PracticeView";
 import { ChatView } from "@/components/ChatView";
 import { HistoryView } from "@/components/HistoryView";
@@ -10,6 +10,12 @@ type Tab = "generate" | "practice" | "chat" | "history";
 
 const Index = () => {
   const [activeTab, setActiveTab] = useState<Tab>("generate");
+  const [quizData, setQuizData] = useState<GeneratedQuizData | null>(null);
+
+  const handleGenerate = (data: GeneratedQuizData) => {
+    setQuizData(data);
+    setActiveTab("practice");
+  };
 
   // Set dark mode by default for the sleek look
   useEffect(() => {
@@ -22,11 +28,11 @@ const Index = () => {
         return (
           <div className="space-y-8">
             <WelcomeHero />
-            <GeneratorPanel />
+            <GeneratorPanel onGenerate={handleGenerate} />
           </div>
         );
       case "practice":
-        return <PracticeView onGoToGenerate={() => setActiveTab("generate")} />;
+        return <PracticeView quizData={quizData} onGoToGenerate={() => setActiveTab("generate")} />;
       case "chat":
         return <ChatView />;
       case "history":
