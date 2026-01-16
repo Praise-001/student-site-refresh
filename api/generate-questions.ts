@@ -128,16 +128,44 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       throw new Error('Invalid response structure');
     }
 
-    // Normalize questions
-    const questions: Question[] = parsed.questions.map((q: any, index: number) => ({
-      id: `q${Date.now()}_${index}`,
-      type: q.type || 'multiple-choice',
-      question: q.question || '',
-      options: Array.isArray(q.options) ? q.options : [],
-      correctAnswer: q.correctAnswer ?? 0,
-      explanation: q.explanation || '',
-      topic: q.topic || ''
-    }));
+    // Shuffle array helper using Fisher-Yates algorithm
+    function shuffleWithIndex<T>(array: T[]): { shuffled: T[]; originalIndices: number[] } {
+      const indices = array.map((_, i) => i);
+      const shuffled = [...array];
+
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        [indices[i], indices[j]] = [indices[j], indices[i]];
+      }
+
+      return { shuffled, originalIndices: indices };
+    }
+
+    // Normalize and shuffle options for multiple-choice questions
+    const questions: Question[] = parsed.questions.map((q: any, index: number) => {
+      const type = q.type || 'multiple-choice';
+      let options = Array.isArray(q.options) ? q.options : [];
+      let correctAnswer = q.correctAnswer ?? 0;
+
+      // Shuffle options for multiple-choice questions (not true-false)
+      if (type === 'multiple-choice' && options.length >= 2 && typeof correctAnswer === 'number') {
+        const { shuffled, originalIndices } = shuffleWithIndex(options);
+        options = shuffled;
+        // Find where the original correct answer ended up
+        correctAnswer = originalIndices.indexOf(q.correctAnswer);
+      }
+
+      return {
+        id: `q${Date.now()}_${index}`,
+        type,
+        question: q.question || '',
+        options,
+        correctAnswer,
+        explanation: q.explanation || '',
+        topic: q.topic || ''
+      };
+    });
 
     return res.status(200).json({
       questions,
