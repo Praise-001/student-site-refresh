@@ -44,37 +44,76 @@ function countWords(text: string): number {
 async function pdfPageToImage(page: any, scale: number = 2.0): Promise<string> {
   const viewport = page.getViewport({ scale });
   const canvas = document.createElement('canvas');
-  const context = canvas.getContext('2d');
+  const context = canvas.getContext('2d', { willReadFrequently: true });
 
   if (!context) {
     throw new Error('Failed to create canvas context');
   }
 
-  canvas.height = viewport.height;
-  canvas.width = viewport.width;
+  // Limit canvas size to prevent memory issues (max 4000x4000)
+  const maxDimension = 4000;
+  let finalScale = scale;
+  if (viewport.width > maxDimension || viewport.height > maxDimension) {
+    const scaleDown = Math.min(maxDimension / viewport.width, maxDimension / viewport.height);
+    finalScale = scale * scaleDown;
+    const newViewport = page.getViewport({ scale: finalScale });
+    canvas.height = newViewport.height;
+    canvas.width = newViewport.width;
 
-  await page.render({
-    canvasContext: context,
-    viewport: viewport,
-  }).promise;
+    await page.render({
+      canvasContext: context,
+      viewport: newViewport,
+    }).promise;
+  } else {
+    canvas.height = viewport.height;
+    canvas.width = viewport.width;
 
-  return canvas.toDataURL('image/png');
+    await page.render({
+      canvasContext: context,
+      viewport: viewport,
+    }).promise;
+  }
+
+  // Use JPEG for smaller file size, better for OCR with white backgrounds
+  return canvas.toDataURL('image/jpeg', 0.95);
 }
 
-// Perform OCR on a single image
-async function performOCR(imageDataUrl: string): Promise<string> {
-  const result = await Tesseract.recognize(
-    imageDataUrl,
-    'eng',
-    {
-      logger: (m) => {
-        if (m.status === 'recognizing text') {
-          console.log(`OCR Progress: ${Math.round(m.progress * 100)}%`);
+// Perform OCR on a single image with retry logic
+async function performOCR(imageDataUrl: string, retries: number = 2): Promise<string> {
+  let lastError: any = null;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const result = await Tesseract.recognize(
+        imageDataUrl,
+        'eng',
+        {
+          logger: (m) => {
+            if (m.status === 'recognizing text' && m.progress > 0) {
+              console.log(`OCR Progress: ${Math.round(m.progress * 100)}%`);
+            }
+          }
         }
+      );
+
+      // Check if we got valid text
+      if (result?.data?.text) {
+        return result.data.text;
+      }
+
+      console.log(`OCR attempt ${attempt + 1} returned empty result`);
+    } catch (error: any) {
+      lastError = error;
+      console.error(`OCR attempt ${attempt + 1} failed:`, error?.message || error);
+
+      if (attempt < retries) {
+        // Wait a bit before retrying
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
     }
-  );
-  return result.data.text;
+  }
+
+  throw lastError || new Error('OCR failed after all retries');
 }
 
 // Extract text from PDF with OCR fallback for scanned documents
@@ -102,12 +141,16 @@ async function extractFromPDF(file: File, onProgress?: OCRProgressCallback): Pro
     const trimmedText = fullText.trim();
     const wordCount = countWords(trimmedText);
 
+    console.log(`Initial PDF extraction: ${wordCount} words from ${pdf.numPages} pages`);
+
     // If we got very little text, try OCR
     if (wordCount < 50 && pdf.numPages > 0) {
       console.log('PDF has little extractable text, attempting OCR...');
       onProgress?.(0, 'Scanned PDF detected, starting OCR...');
 
       let ocrText = '';
+      let ocrErrors: string[] = [];
+      let successfulPages = 0;
 
       for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
         onProgress?.(
@@ -117,22 +160,38 @@ async function extractFromPDF(file: File, onProgress?: OCRProgressCallback): Pro
 
         try {
           const page = await pdf.getPage(pageNum);
-          const imageDataUrl = await pdfPageToImage(page);
+          console.log(`Rendering page ${pageNum} to image...`);
+          const imageDataUrl = await pdfPageToImage(page, 2.5); // Higher scale for better OCR
+          console.log(`Running OCR on page ${pageNum}...`);
           const pageOcrText = await performOCR(imageDataUrl);
 
           if (pageOcrText.trim()) {
             ocrText += `[Page ${pageNum}]\n${pageOcrText}\n\n`;
+            successfulPages++;
+            console.log(`Page ${pageNum} OCR extracted ${countWords(pageOcrText)} words`);
+          } else {
+            console.log(`Page ${pageNum} OCR returned empty text`);
           }
-        } catch (ocrError) {
-          console.error(`OCR failed for page ${pageNum}:`, ocrError);
+        } catch (ocrError: any) {
+          const errorMsg = ocrError?.message || String(ocrError);
+          console.error(`OCR failed for page ${pageNum}:`, errorMsg);
+          ocrErrors.push(`Page ${pageNum}: ${errorMsg}`);
         }
       }
 
       onProgress?.(100, 'OCR complete');
 
-      if (countWords(ocrText) > wordCount) {
+      const ocrWordCount = countWords(ocrText);
+      console.log(`OCR complete: ${ocrWordCount} words from ${successfulPages}/${pdf.numPages} pages`);
+
+      if (ocrWordCount > wordCount) {
         console.log('OCR extracted more text than regular extraction');
         return ocrText.trim();
+      }
+
+      // If OCR failed completely, log the errors for debugging
+      if (ocrErrors.length > 0 && ocrWordCount === 0) {
+        console.error('All OCR attempts failed:', ocrErrors);
       }
     }
 

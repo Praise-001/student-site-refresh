@@ -75,8 +75,9 @@ export const GeneratorPanel = ({
         const fileNames = files.map(f => f.name).join(', ');
         throw new Error(
           `Only ${extracted.totalWordCount} words extracted from: ${fileNames}. ` +
-          `OCR was attempted but could not extract enough text. Please try: ` +
-          `(1) A higher quality PDF, (2) Copy-paste content into a .txt file, or (3) A DOCX file.`
+          `This may be a scanned/image-based PDF. Please try: ` +
+          `(1) A text-based PDF with selectable text, (2) Copy-paste content into a .txt file, or (3) A DOCX file. ` +
+          `Check browser console (F12) for detailed OCR logs.`
         );
       }
 
