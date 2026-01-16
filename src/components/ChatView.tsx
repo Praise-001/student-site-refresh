@@ -8,6 +8,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { extractAllFilesContent } from "@/lib/fileExtractor";
+import { extractTextFromImage, isImageFile } from "@/lib/imageExtractor";
 
 interface Message {
   id: string;
@@ -42,6 +43,7 @@ export const ChatView = ({
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isExtracting, setIsExtracting] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState<string>("");
   const [attachments, setAttachments] = useState<AttachmentPreview[]>([]);
   const [isAttachMenuOpen, setIsAttachMenuOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -130,6 +132,30 @@ export const ChatView = ({
       }
     }
 
+    // Extract text from images using OCR
+    const imageAttachments = attachments.filter(a => a.type === "image");
+    let imageTexts: string[] = [];
+
+    if (imageAttachments.length > 0) {
+      setOcrProgress("Extracting text from images...");
+      for (let i = 0; i < imageAttachments.length; i++) {
+        const img = imageAttachments[i];
+        setOcrProgress(`Reading image ${i + 1}/${imageAttachments.length}...`);
+        try {
+          const result = await extractTextFromImage(img.file, (progress) => {
+            setOcrProgress(`Reading image ${i + 1}/${imageAttachments.length}: ${progress}%`);
+          });
+          if (result.text) {
+            imageTexts.push(`[Text from image "${img.name}"]\n${result.text}`);
+          }
+        } catch (error) {
+          console.error(`Failed to extract text from ${img.name}:`, error);
+          imageTexts.push(`[Could not read text from "${img.name}"]`);
+        }
+      }
+      setOcrProgress("");
+    }
+
     const userMessage: Message = {
       id: `msg-${Date.now()}`,
       role: "user",
@@ -144,13 +170,21 @@ export const ChatView = ({
     setIsLoading(true);
 
     try {
-      // Build message content including attachment info
+      // Build message content including extracted image text
       let fullMessage = userMessage.content;
-      if (userMessage.attachments && userMessage.attachments.length > 0) {
-        const attachmentInfo = userMessage.attachments
-          .map(a => `[Attached ${a.type}: ${a.name}]`)
+
+      // Add OCR extracted text from images
+      if (imageTexts.length > 0) {
+        const imageContent = imageTexts.join("\n\n");
+        fullMessage = imageContent + (fullMessage ? "\n\n" + fullMessage : "");
+      }
+
+      // Add document attachment info (if any)
+      if (documentAttachments.length > 0) {
+        const docInfo = documentAttachments
+          .map(a => `[Attached document: ${a.name}]`)
           .join("\n");
-        fullMessage = attachmentInfo + (fullMessage ? "\n\n" + fullMessage : "");
+        fullMessage = docInfo + "\n\n" + fullMessage;
       }
 
       const response = await fetch("/api/chat", {
@@ -211,7 +245,7 @@ export const ChatView = ({
   ];
 
   const hasContext = extractedContent.length > 0 || attachments.length > 0;
-  const canSend = (message.trim() || attachments.length > 0) && !isLoading;
+  const canSend = (message.trim() || attachments.length > 0) && !isLoading && !ocrProgress;
 
   return (
     <div className="flex flex-col h-[calc(100vh-200px)] max-w-3xl mx-auto">
@@ -355,6 +389,16 @@ export const ChatView = ({
             </div>
           )}
           <div ref={messagesEndRef} />
+        </div>
+      )}
+
+      {/* OCR Progress */}
+      {ocrProgress && (
+        <div className="px-4 py-2 border-t border-border/50">
+          <div className="flex items-center gap-2 text-sm text-primary">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            <span>{ocrProgress}</span>
+          </div>
         </div>
       )}
 
