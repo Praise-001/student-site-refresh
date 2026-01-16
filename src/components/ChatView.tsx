@@ -270,11 +270,6 @@ export const ChatView = ({
             <p className="text-muted-foreground max-w-md mx-auto">
               Ask questions about your study materials, get explanations, or request help with specific topics.
             </p>
-            {files.length === 0 && (
-              <p className="text-sm text-primary mt-4">
-                Use the 📎 button below to upload files or images
-              </p>
-            )}
           </div>
 
           {/* Suggested Prompts */}
