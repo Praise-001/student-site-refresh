@@ -37,7 +37,7 @@ const previousQuestions: string[] = [];
 export const GeneratorPanel = ({ onGenerate }: GeneratorPanelProps) => {
   const [files, setFiles] = useState<File[]>([]);
   const [selectedTypes, setSelectedTypes] = useState<string[]>(["multiple-choice", "fill-blank"]);
-  const [questionCount, setQuestionCount] = useState(200);
+  const [questionCount, setQuestionCount] = useState(20);
   const [difficulty, setDifficulty] = useState("medium");
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationProgress, setGenerationProgress] = useState("");
