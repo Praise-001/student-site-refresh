@@ -21,7 +21,8 @@
       "Bash(timeout:*)",
       "Bash(npm run dev:*)",
       "Bash(git reset:*)",
-      "Bash(npm uninstall:*)"
+      "Bash(npm uninstall:*)",
+      "Bash(vercel dev:*)"
     ]
   }
 }
