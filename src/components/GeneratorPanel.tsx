@@ -70,7 +70,12 @@ export const GeneratorPanel = ({
       const extracted = await extractAllFilesContent(files);
 
       if (extracted.totalWordCount < 50) {
-        throw new Error("Not enough content in files. Please upload materials with more text.");
+        const fileNames = files.map(f => f.name).join(', ');
+        throw new Error(
+          `Only ${extracted.totalWordCount} words extracted from: ${fileNames}. ` +
+          `This may be a scanned/image-based PDF. Please try: ` +
+          `(1) A text-based PDF, (2) Copy-paste content into a .txt file, or (3) A DOCX file.`
+        );
       }
 
       // Store extracted content for AI Chat
