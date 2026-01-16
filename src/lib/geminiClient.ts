@@ -18,20 +18,68 @@ export interface Question {
   topic?: string;
 }
 
+// Question type examples - only include what user selected
+const questionTypeExamples: Record<string, string> = {
+  'multiple-choice': `{
+      "id": "q1",
+      "type": "multiple-choice",
+      "question": "Question text here with $math$ if applicable",
+      "options": ["Option A", "Option B", "Option C", "Option D"],
+      "correctAnswer": 0,
+      "explanation": "Brief explanation of why this is correct",
+      "topic": "Main topic/concept tested"
+    }`,
+  'true-false': `{
+      "id": "q1",
+      "type": "true-false",
+      "question": "Statement to evaluate as true or false",
+      "options": ["True", "False"],
+      "correctAnswer": 0,
+      "explanation": "Why this is true/false",
+      "topic": "Topic tested"
+    }`,
+  'fill-blank': `{
+      "id": "q1",
+      "type": "fill-blank",
+      "question": "The _____ is the process by which...",
+      "options": [],
+      "correctAnswer": "answer word or phrase",
+      "explanation": "Explanation",
+      "topic": "Topic"
+    }`,
+  'short-answer': `{
+      "id": "q1",
+      "type": "short-answer",
+      "question": "Explain briefly...",
+      "options": [],
+      "correctAnswer": "Expected answer summary",
+      "explanation": "Key points that should be covered",
+      "topic": "Topic"
+    }`
+};
+
 function buildPrompt(content: string, config: GenerateConfig): string {
   const typeDistribution = config.questionTypes.map(type => {
     const count = Math.ceil(config.questionCount / config.questionTypes.length);
-    return `- ${type}: approximately ${count} questions`;
+    return `- ${type}: ${count} questions`;
   }).join('\n');
+
+  // Build examples only for selected types
+  const selectedExamples = config.questionTypes
+    .map(type => questionTypeExamples[type])
+    .filter(Boolean)
+    .join(',\n    ');
+
+  const allowedTypesList = config.questionTypes.join(', ');
 
   const avoidSection = [];
 
   if (config.previousTopics?.length) {
-    avoidSection.push(`Previously covered topics (DO NOT repeat these concepts):\n${config.previousTopics.slice(-30).join(', ')}`);
+    avoidSection.push(`Previously covered topics (DO NOT repeat these concepts):\n${config.previousTopics.slice(-50).join(', ')}`);
   }
 
   if (config.previousQuestions?.length) {
-    avoidSection.push(`Previously asked questions (DO NOT create similar questions):\n${config.previousQuestions.slice(-30).map((q, i) => `${i + 1}. ${q}`).join('\n')}`);
+    avoidSection.push(`Previously asked questions (DO NOT create similar questions):\n${config.previousQuestions.slice(-50).map((q, i) => `${i + 1}. ${q}`).join('\n')}`);
   }
 
   const avoidText = avoidSection.length > 0
@@ -49,30 +97,42 @@ function buildPrompt(content: string, config: GenerateConfig): string {
 6. Quote or closely paraphrase specific content from the material in your questions
 
 === STUDY MATERIAL START ===
-${content.slice(0, 20000)}
+${content.slice(0, 30000)}
 === STUDY MATERIAL END ===
+
+=== QUESTION TYPE RESTRICTION ===
+**CRITICAL: You MUST ONLY generate these question types: ${allowedTypesList}**
+**DO NOT generate any other question types. If the user selected only "multiple-choice", generate ONLY multiple-choice questions.**
+
+Question Distribution:
+${typeDistribution}
+
+=== CONTENT COVERAGE - VERY IMPORTANT ===
+**You MUST distribute questions EVENLY across ALL sections/parts of the material:**
+- Do NOT cluster questions from just the beginning or just one section
+- Cover content from the BEGINNING, MIDDLE, and END of the material equally
+- Pick topics RANDOMLY from different parts of the document
+- Each question should come from a DIFFERENT paragraph or section when possible
+- Ensure comprehensive coverage of ALL major topics in the material
 
 === QUESTION REQUIREMENTS ===
 
-1. Question Type Distribution:
-${typeDistribution}
-
-2. Difficulty Level: ${config.difficulty}
+1. Difficulty Level: ${config.difficulty}
    - easy: Direct recall of facts, definitions, and terms FROM the material
    - medium: Application and analysis of concepts FROM the material
    - hard: Synthesis and evaluation of ideas FROM the material
 
-3. Source Verification:
+2. Source Verification:
    - Before writing each question, identify the EXACT sentence or paragraph in the material it comes from
    - The answer MUST be findable in the provided text
    - Include the "topic" field with the specific section/concept from the material
 
-4. Mathematical Content (if present in material):
+3. Mathematical Content (if present in material):
    - If the material contains math, formulas, or equations, CREATE questions about them
    - Wrap ALL mathematical expressions in LaTeX format: $inline math$ or $$block math$$
    - Use proper LaTeX: \\frac{a}{b}, x^2, \\sqrt{x}, \\sum, \\int, \\pi, \\theta, etc.
 
-5. Question Quality:
+4. Question Quality:
    - Be specific - reference actual content from the material
    - For multiple-choice: all options should be plausible based on material context
    - For true-false: statements must be verifiable from the material
@@ -83,53 +143,19 @@ ${avoidText}
 OUTPUT FORMAT - Return ONLY valid JSON, no markdown:
 {
   "questions": [
-    {
-      "id": "q1",
-      "type": "multiple-choice",
-      "question": "Question text here with $math$ if applicable",
-      "options": ["Option A", "Option B", "Option C", "Option D"],
-      "correctAnswer": 0,
-      "explanation": "Brief explanation of why this is correct",
-      "topic": "Main topic/concept tested"
-    },
-    {
-      "id": "q2",
-      "type": "true-false",
-      "question": "Statement to evaluate as true or false",
-      "options": ["True", "False"],
-      "correctAnswer": 0,
-      "explanation": "Why this is true/false",
-      "topic": "Topic tested"
-    },
-    {
-      "id": "q3",
-      "type": "fill-blank",
-      "question": "The _____ is the process by which...",
-      "options": [],
-      "correctAnswer": "answer word or phrase",
-      "explanation": "Explanation",
-      "topic": "Topic"
-    },
-    {
-      "id": "q4",
-      "type": "short-answer",
-      "question": "Explain briefly...",
-      "options": [],
-      "correctAnswer": "Expected answer summary",
-      "explanation": "Key points that should be covered",
-      "topic": "Topic"
-    }
+    ${selectedExamples}
   ]
 }
 
 IMPORTANT:
 - Generate EXACTLY ${config.questionCount} questions
+- ONLY use these question types: ${allowedTypesList} - DO NOT use any other types
 - Return ONLY the JSON object, no other text
 - Ensure correctAnswer for multiple-choice and true-false is a NUMBER (0-based index)
 - Ensure correctAnswer for fill-blank and short-answer is a STRING`;
 }
 
-function parseResponse(responseText: string): Question[] {
+function parseResponse(responseText: string, allowedTypes: string[]): Question[] {
   let cleaned = responseText.trim();
 
   // Remove ```json and ``` markers
@@ -150,15 +176,25 @@ function parseResponse(responseText: string): Question[] {
       throw new Error('Invalid response structure');
     }
 
-    return parsed.questions.map((q: any, index: number) => ({
-      id: q.id || `q${index + 1}`,
-      type: q.type || 'multiple-choice',
-      question: q.question || '',
-      options: Array.isArray(q.options) ? q.options : [],
-      correctAnswer: q.correctAnswer ?? 0,
-      explanation: q.explanation || '',
-      topic: q.topic || '',
-    }));
+    // Map and filter questions to only include allowed types
+    const questions = parsed.questions
+      .map((q: any, index: number) => ({
+        id: q.id || `q${index + 1}`,
+        type: q.type || 'multiple-choice',
+        question: q.question || '',
+        options: Array.isArray(q.options) ? q.options : [],
+        correctAnswer: q.correctAnswer ?? 0,
+        explanation: q.explanation || '',
+        topic: q.topic || '',
+      }))
+      .filter((q: Question) => allowedTypes.includes(q.type));
+
+    // Log if any questions were filtered out
+    if (questions.length < parsed.questions.length) {
+      console.warn(`Filtered out ${parsed.questions.length - questions.length} questions with wrong types`);
+    }
+
+    return questions;
   } catch (error) {
     console.error('Failed to parse AI response:', error);
     console.error('Response was:', responseText.slice(0, 500));
@@ -201,7 +237,7 @@ export async function generateQuestionsWithGemini(
     });
 
     const responseText = chatCompletion.choices[0]?.message?.content || '';
-    return parseResponse(responseText);
+    return parseResponse(responseText, config.questionTypes);
   } catch (error: any) {
     console.error('Question generation error:', error);
 

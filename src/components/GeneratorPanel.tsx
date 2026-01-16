@@ -37,7 +37,7 @@ const previousQuestions: string[] = [];
 export const GeneratorPanel = ({ onGenerate }: GeneratorPanelProps) => {
   const [files, setFiles] = useState<File[]>([]);
   const [selectedTypes, setSelectedTypes] = useState<string[]>(["multiple-choice", "fill-blank"]);
-  const [questionCount, setQuestionCount] = useState(15);
+  const [questionCount, setQuestionCount] = useState(200);
   const [difficulty, setDifficulty] = useState("medium");
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationProgress, setGenerationProgress] = useState("");
@@ -84,8 +84,8 @@ export const GeneratorPanel = ({ onGenerate }: GeneratorPanelProps) => {
               questionTypes: selectedTypes,
               questionCount,
               difficulty,
-              previousTopics: previousTopics.slice(-30),
-              previousQuestions: previousQuestions.slice(-30),
+              previousTopics: previousTopics.slice(-100),
+              previousQuestions: previousQuestions.slice(-100),
             }
           );
           // If successful, break out of loop
@@ -126,12 +126,12 @@ export const GeneratorPanel = ({ onGenerate }: GeneratorPanelProps) => {
         }
       });
 
-      // Keep only last 100 items in each list
-      if (previousTopics.length > 100) {
-        previousTopics.splice(0, previousTopics.length - 100);
+      // Keep only last 500 items in each list for better repetition avoidance
+      if (previousTopics.length > 500) {
+        previousTopics.splice(0, previousTopics.length - 500);
       }
-      if (previousQuestions.length > 100) {
-        previousQuestions.splice(0, previousQuestions.length - 100);
+      if (previousQuestions.length > 500) {
+        previousQuestions.splice(0, previousQuestions.length - 500);
       }
 
       setGenerationProgress("");
