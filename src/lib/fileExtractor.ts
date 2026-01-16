@@ -1,5 +1,6 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import mammoth from 'mammoth';
+import JSZip from 'jszip';
 
 // For pdfjs-dist v5.x, we need to import the worker directly
 // This tells Vite to bundle the worker properly
@@ -87,23 +88,78 @@ async function extractFromTXT(file: File): Promise<string> {
   });
 }
 
-// Extract text from PPT/PPTX (basic support)
+// Extract text from PPT/PPTX
 async function extractFromPPT(file: File): Promise<string> {
-  // For PPTX files, we can try to extract using mammoth or basic text extraction
-  // PPTX is a ZIP file with XML content
-  try {
-    const arrayBuffer = await file.arrayBuffer();
-    // Try mammoth first as it can handle some Office formats
-    const result = await mammoth.extractRawText({ arrayBuffer });
-    if (result.value.trim()) {
-      return result.value;
-    }
-  } catch {
-    // Fall back to basic text extraction
-  }
+  const arrayBuffer = await file.arrayBuffer();
 
-  // Return a message if we can't extract
-  return `[Content from ${file.name} - PowerPoint extraction limited. For best results, export as PDF or copy text to a TXT file.]`;
+  try {
+    const zip = await JSZip.loadAsync(arrayBuffer);
+    const slideTexts: string[] = [];
+
+    // Get all slide files (ppt/slides/slide1.xml, slide2.xml, etc.)
+    const slideFiles = Object.keys(zip.files)
+      .filter(name => name.match(/ppt\/slides\/slide\d+\.xml$/))
+      .sort((a, b) => {
+        const numA = parseInt(a.match(/slide(\d+)/)?.[1] || '0');
+        const numB = parseInt(b.match(/slide(\d+)/)?.[1] || '0');
+        return numA - numB;
+      });
+
+    for (const slidePath of slideFiles) {
+      const slideXml = await zip.files[slidePath].async('string');
+
+      // Extract text from XML - look for <a:t> tags which contain text
+      const textMatches = slideXml.match(/<a:t>([^<]*)<\/a:t>/g) || [];
+      const slideText = textMatches
+        .map(match => match.replace(/<\/?a:t>/g, ''))
+        .filter(text => text.trim())
+        .join(' ');
+
+      if (slideText.trim()) {
+        const slideNum = slidePath.match(/slide(\d+)/)?.[1] || '?';
+        slideTexts.push(`[Slide ${slideNum}]\n${slideText}`);
+      }
+    }
+
+    // Also try to extract from notes if present
+    const notesFiles = Object.keys(zip.files)
+      .filter(name => name.match(/ppt\/notesSlides\/notesSlide\d+\.xml$/));
+
+    for (const notePath of notesFiles) {
+      const noteXml = await zip.files[notePath].async('string');
+      const textMatches = noteXml.match(/<a:t>([^<]*)<\/a:t>/g) || [];
+      const noteText = textMatches
+        .map(match => match.replace(/<\/?a:t>/g, ''))
+        .filter(text => text.trim())
+        .join(' ');
+
+      if (noteText.trim()) {
+        const noteNum = notePath.match(/notesSlide(\d+)/)?.[1] || '?';
+        slideTexts.push(`[Notes ${noteNum}]\n${noteText}`);
+      }
+    }
+
+    if (slideTexts.length > 0) {
+      return slideTexts.join('\n\n');
+    }
+
+    // Fallback message if no text found
+    return `[No extractable text found in ${file.name}. The presentation may contain only images.]`;
+  } catch (error) {
+    console.error('PPTX extraction error:', error);
+
+    // Try mammoth as fallback for older .ppt format
+    try {
+      const result = await mammoth.extractRawText({ arrayBuffer });
+      if (result.value.trim()) {
+        return result.value;
+      }
+    } catch {
+      // Ignore mammoth errors
+    }
+
+    throw new Error(`Failed to extract text from ${file.name}. Try exporting as PDF or DOCX.`);
+  }
 }
 
 // Main extraction function
