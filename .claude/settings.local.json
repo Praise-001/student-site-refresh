@@ -20,7 +20,8 @@
       "Bash(npx vercel:*)",
       "Bash(timeout:*)",
       "Bash(npm run dev:*)",
-      "Bash(git reset:*)"
+      "Bash(git reset:*)",
+      "Bash(npm uninstall:*)"
     ]
   }
 }
