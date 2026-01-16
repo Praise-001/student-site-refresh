@@ -1,6 +1,7 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import mammoth from 'mammoth';
 import JSZip from 'jszip';
+import Tesseract from 'tesseract.js';
 
 // For pdfjs-dist v5.x, we need to import the worker directly
 // This tells Vite to bundle the worker properly
@@ -8,6 +9,9 @@ import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 // Set up PDF.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+
+// OCR progress callback type
+type OCRProgressCallback = (progress: number, message: string) => void;
 
 export interface ExtractedContent {
   text: string;
@@ -36,8 +40,45 @@ function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(word => word.length > 0).length;
 }
 
-// Extract text from PDF
-async function extractFromPDF(file: File): Promise<string> {
+// Convert PDF page to image for OCR
+async function pdfPageToImage(page: any, scale: number = 2.0): Promise<string> {
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d');
+
+  if (!context) {
+    throw new Error('Failed to create canvas context');
+  }
+
+  canvas.height = viewport.height;
+  canvas.width = viewport.width;
+
+  await page.render({
+    canvasContext: context,
+    viewport: viewport,
+  }).promise;
+
+  return canvas.toDataURL('image/png');
+}
+
+// Perform OCR on a single image
+async function performOCR(imageDataUrl: string): Promise<string> {
+  const result = await Tesseract.recognize(
+    imageDataUrl,
+    'eng',
+    {
+      logger: (m) => {
+        if (m.status === 'recognizing text') {
+          console.log(`OCR Progress: ${Math.round(m.progress * 100)}%`);
+        }
+      }
+    }
+  );
+  return result.data.text;
+}
+
+// Extract text from PDF with OCR fallback for scanned documents
+async function extractFromPDF(file: File, onProgress?: OCRProgressCallback): Promise<string> {
   const arrayBuffer = await file.arrayBuffer();
 
   try {
@@ -48,6 +89,7 @@ async function extractFromPDF(file: File): Promise<string> {
     const pdf = await loadingTask.promise;
     let fullText = '';
 
+    // First, try regular text extraction
     for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
       const page = await pdf.getPage(pageNum);
       const textContent = await page.getTextContent();
@@ -58,10 +100,40 @@ async function extractFromPDF(file: File): Promise<string> {
     }
 
     const trimmedText = fullText.trim();
+    const wordCount = countWords(trimmedText);
 
-    // If we got very little text, it might be a scanned PDF
-    if (trimmedText.length < 50 && pdf.numPages > 0) {
-      console.warn('PDF appears to have little extractable text - may be scanned/image-based');
+    // If we got very little text, try OCR
+    if (wordCount < 50 && pdf.numPages > 0) {
+      console.log('PDF has little extractable text, attempting OCR...');
+      onProgress?.(0, 'Scanned PDF detected, starting OCR...');
+
+      let ocrText = '';
+
+      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        onProgress?.(
+          (pageNum - 1) / pdf.numPages * 100,
+          `Running OCR on page ${pageNum} of ${pdf.numPages}...`
+        );
+
+        try {
+          const page = await pdf.getPage(pageNum);
+          const imageDataUrl = await pdfPageToImage(page);
+          const pageOcrText = await performOCR(imageDataUrl);
+
+          if (pageOcrText.trim()) {
+            ocrText += `[Page ${pageNum}]\n${pageOcrText}\n\n`;
+          }
+        } catch (ocrError) {
+          console.error(`OCR failed for page ${pageNum}:`, ocrError);
+        }
+      }
+
+      onProgress?.(100, 'OCR complete');
+
+      if (countWords(ocrText) > wordCount) {
+        console.log('OCR extracted more text than regular extraction');
+        return ocrText.trim();
+      }
     }
 
     return trimmedText;
@@ -163,14 +235,17 @@ async function extractFromPPT(file: File): Promise<string> {
 }
 
 // Main extraction function
-export async function extractFileContent(file: File): Promise<ExtractedContent> {
+export async function extractFileContent(
+  file: File,
+  onProgress?: OCRProgressCallback
+): Promise<ExtractedContent> {
   const extension = file.name.split('.').pop()?.toLowerCase() || '';
   let text = '';
 
   try {
     switch (extension) {
       case 'pdf':
-        text = await extractFromPDF(file);
+        text = await extractFromPDF(file, onProgress);
         break;
       case 'docx':
       case 'doc':
@@ -200,13 +275,26 @@ export async function extractFileContent(file: File): Promise<ExtractedContent> 
 }
 
 // Extract content from multiple files
-export async function extractAllFilesContent(files: File[]): Promise<{
+export async function extractAllFilesContent(
+  files: File[],
+  onProgress?: OCRProgressCallback
+): Promise<{
   combinedText: string;
   fileDetails: ExtractedContent[];
   totalWordCount: number;
   hasMathContent: boolean;
 }> {
-  const results = await Promise.all(files.map(extractFileContent));
+  const results: ExtractedContent[] = [];
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    const fileProgress = (progress: number, message: string) => {
+      const overallProgress = (i / files.length) * 100 + (progress / files.length);
+      onProgress?.(overallProgress, `${file.name}: ${message}`);
+    };
+    const result = await extractFileContent(file, fileProgress);
+    results.push(result);
+  }
 
   const combinedText = results
     .map(r => `=== ${r.filename} ===\n\n${r.text}`)

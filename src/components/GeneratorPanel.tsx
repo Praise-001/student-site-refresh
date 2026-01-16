@@ -66,15 +66,17 @@ export const GeneratorPanel = ({
     setGenerationProgress("Extracting text from files...");
 
     try {
-      // Extract text from all files
-      const extracted = await extractAllFilesContent(files);
+      // Extract text from all files with OCR progress callback
+      const extracted = await extractAllFilesContent(files, (progress, message) => {
+        setGenerationProgress(message);
+      });
 
       if (extracted.totalWordCount < 50) {
         const fileNames = files.map(f => f.name).join(', ');
         throw new Error(
           `Only ${extracted.totalWordCount} words extracted from: ${fileNames}. ` +
-          `This may be a scanned/image-based PDF. Please try: ` +
-          `(1) A text-based PDF, (2) Copy-paste content into a .txt file, or (3) A DOCX file.`
+          `OCR was attempted but could not extract enough text. Please try: ` +
+          `(1) A higher quality PDF, (2) Copy-paste content into a .txt file, or (3) A DOCX file.`
         );
       }
 
