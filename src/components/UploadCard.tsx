@@ -4,12 +4,12 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
 interface UploadCardProps {
+  files?: File[];
   onFilesChange?: (files: File[]) => void;
 }
 
-export const UploadCard = ({ onFilesChange }: UploadCardProps) => {
+export const UploadCard = ({ files = [], onFilesChange }: UploadCardProps) => {
   const [isDragging, setIsDragging] = useState(false);
-  const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -24,24 +24,23 @@ export const UploadCard = ({ onFilesChange }: UploadCardProps) => {
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    const files = Array.from(e.dataTransfer.files);
-    const newFiles = [...uploadedFiles, ...files];
-    setUploadedFiles(newFiles);
+    const droppedFiles = Array.from(e.dataTransfer.files);
+    const newFiles = [...files, ...droppedFiles];
     onFilesChange?.(newFiles);
-  }, [uploadedFiles, onFilesChange]);
+  }, [files, onFilesChange]);
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    const newFiles = [...uploadedFiles, ...files];
-    setUploadedFiles(newFiles);
+    const selectedFiles = Array.from(e.target.files || []);
+    const newFiles = [...files, ...selectedFiles];
     onFilesChange?.(newFiles);
-  }, [uploadedFiles, onFilesChange]);
+    // Reset input so same file can be selected again
+    e.target.value = '';
+  }, [files, onFilesChange]);
 
   const removeFile = useCallback((index: number) => {
-    const newFiles = uploadedFiles.filter((_, i) => i !== index);
-    setUploadedFiles(newFiles);
+    const newFiles = files.filter((_, i) => i !== index);
     onFilesChange?.(newFiles);
-  }, [uploadedFiles, onFilesChange]);
+  }, [files, onFilesChange]);
 
   const formatFileSize = (bytes: number) => {
     if (bytes < 1024) return `${bytes} B`;
@@ -56,8 +55,8 @@ export const UploadCard = ({ onFilesChange }: UploadCardProps) => {
           "flex flex-col items-center justify-center w-full min-h-[200px] rounded-2xl cursor-pointer transition-all duration-300",
           "border-2 border-dashed",
           "hover:border-primary/60 hover:bg-primary/5",
-          isDragging 
-            ? "border-primary bg-primary/10 scale-[1.02]" 
+          isDragging
+            ? "border-primary bg-primary/10 scale-[1.02]"
             : "border-border/60 bg-card/50"
         )}
         onDragOver={handleDragOver}
@@ -67,8 +66,8 @@ export const UploadCard = ({ onFilesChange }: UploadCardProps) => {
         <div className="flex flex-col items-center justify-center py-8 px-6 text-center">
           <div className={cn(
             "w-16 h-16 rounded-2xl flex items-center justify-center mb-4 transition-all duration-300",
-            isDragging 
-              ? "bg-primary/20 scale-110" 
+            isDragging
+              ? "bg-primary/20 scale-110"
               : "bg-secondary"
           )}>
             <Upload className={cn(
@@ -98,18 +97,17 @@ export const UploadCard = ({ onFilesChange }: UploadCardProps) => {
         />
       </label>
 
-      {uploadedFiles.length > 0 && (
+      {files.length > 0 && (
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <p className="text-sm font-medium text-foreground">
-              {uploadedFiles.length} file{uploadedFiles.length > 1 ? 's' : ''} ready
+              {files.length} file{files.length > 1 ? 's' : ''} ready
             </p>
-            <Button 
-              variant="ghost" 
+            <Button
+              variant="ghost"
               size="sm"
               className="text-xs text-muted-foreground hover:text-destructive"
               onClick={() => {
-                setUploadedFiles([]);
                 onFilesChange?.([]);
               }}
             >
@@ -117,9 +115,9 @@ export const UploadCard = ({ onFilesChange }: UploadCardProps) => {
             </Button>
           </div>
           <div className="space-y-2 max-h-[200px] overflow-y-auto pr-2">
-            {uploadedFiles.map((file, index) => (
-              <div 
-                key={index} 
+            {files.map((file, index) => (
+              <div
+                key={`${file.name}-${index}`}
                 className="group flex items-center gap-3 p-3 bg-secondary/50 rounded-xl border border-border/50 hover:border-primary/30 transition-colors"
               >
                 <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">

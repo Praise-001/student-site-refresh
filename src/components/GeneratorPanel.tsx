@@ -28,14 +28,21 @@ export interface GeneratedQuizData {
 
 interface GeneratorPanelProps {
   onGenerate?: (data: GeneratedQuizData) => void;
+  files: File[];
+  onFilesChange: (files: File[]) => void;
+  onExtractedContent?: (content: string) => void;
 }
 
 // Store previously generated questions and topics to avoid repetition across sessions
 const previousTopics: string[] = [];
 const previousQuestions: string[] = [];
 
-export const GeneratorPanel = ({ onGenerate }: GeneratorPanelProps) => {
-  const [files, setFiles] = useState<File[]>([]);
+export const GeneratorPanel = ({
+  onGenerate,
+  files,
+  onFilesChange,
+  onExtractedContent
+}: GeneratorPanelProps) => {
   const [selectedTypes, setSelectedTypes] = useState<string[]>(["multiple-choice", "fill-blank"]);
   const [questionCount, setQuestionCount] = useState(20);
   const [difficulty, setDifficulty] = useState("medium");
@@ -65,6 +72,9 @@ export const GeneratorPanel = ({ onGenerate }: GeneratorPanelProps) => {
       if (extracted.totalWordCount < 50) {
         throw new Error("Not enough content in files. Please upload materials with more text.");
       }
+
+      // Store extracted content for AI Chat
+      onExtractedContent?.(extracted.combinedText);
 
       setGenerationProgress("Generating questions with AI...");
 
@@ -162,7 +172,7 @@ export const GeneratorPanel = ({ onGenerate }: GeneratorPanelProps) => {
           </div>
           <h2 className="text-lg font-semibold text-foreground">Upload your study materials</h2>
         </div>
-        <UploadCard onFilesChange={setFiles} />
+        <UploadCard files={files} onFilesChange={onFilesChange} />
       </section>
 
       {/* Step 2: Question Types */}
@@ -173,9 +183,9 @@ export const GeneratorPanel = ({ onGenerate }: GeneratorPanelProps) => {
           </div>
           <h2 className="text-lg font-semibold text-foreground">Choose question types</h2>
         </div>
-        <QuestionTypeSelector 
-          selectedTypes={selectedTypes} 
-          onToggle={handleToggleType} 
+        <QuestionTypeSelector
+          selectedTypes={selectedTypes}
+          onToggle={handleToggleType}
         />
       </section>
 
