@@ -1,9 +1,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-// Available models for load balancing
+// Available models for load balancing (prioritize models good at JSON)
 const MODELS = [
-  'openai/gpt-oss-120b:free',
-  'google/gemma-3-4b-it:free'
+  'meta-llama/llama-3.3-70b-instruct:free',
+  'google/gemma-2-9b-it:free'
 ];
 
 // Pick a random model
@@ -46,18 +46,20 @@ function buildSystemPrompt(batchCount: number, questionTypes: string[], difficul
     return `- ${type}: approximately ${count} questions`;
   }).join('\n');
 
-  return `You are an expert exam creator. You MUST follow these rules strictly:
+  return `You are an expert exam creator that outputs ONLY valid JSON.
+
+CRITICAL: Your response must be ONLY a JSON object. No markdown, no \`\`\`, no explanations, no text before or after. Start directly with { and end with }.
 
 RULES:
-1. Output must be valid JSON only. No markdown, no explanatory text.
-2. Create exactly ${batchCount} unique questions - NO REPETITION OR SIMILAR QUESTIONS.
-3. Each question must test a DIFFERENT concept or fact from the material.
+1. Output ONLY valid JSON - nothing else.
+2. Create exactly ${batchCount} unique questions.
+3. Each question must test a DIFFERENT concept.
 4. Question Types:
 ${typeDistribution}
 5. Difficulty: ${difficulty}
-6. For multiple-choice: Vary which option (A/B/C/D) is correct - do NOT always make the first or last option correct.
+6. For multiple-choice: Vary correct answer positions.
 
-JSON SCHEMA:
+REQUIRED JSON FORMAT (output EXACTLY this structure):
 {
   "questions": [
     {
@@ -104,7 +106,7 @@ ${batchInfo}Generate ${batchCount} unique questions based STRICTLY on the text a
 - Do NOT repeat any previously generated questions`;
 }
 
-// Try to repair truncated JSON
+// Try to extract and repair JSON from response
 function tryRepairJSON(jsonString: string): any {
   // First try parsing as-is
   try {
@@ -115,10 +117,30 @@ function tryRepairJSON(jsonString: string): any {
 
   let repaired = jsonString.trim();
 
-  // Remove markdown code blocks if present
-  repaired = repaired.replace(/^```json?\s*/i, '').replace(/\s*```$/i, '');
+  // Remove markdown code blocks if present (various formats)
+  repaired = repaired.replace(/^```json\s*/i, '').replace(/\s*```$/i, '');
+  repaired = repaired.replace(/^```\s*/i, '').replace(/\s*```$/i, '');
 
-  // Try parsing again after cleanup
+  // Try parsing again after markdown cleanup
+  try {
+    return JSON.parse(repaired);
+  } catch (e) {
+    // Continue with repairs
+  }
+
+  // Try to find JSON object in the response (model might have added text before/after)
+  const jsonStartIndex = repaired.indexOf('{"questions"');
+  if (jsonStartIndex === -1) {
+    // Try alternate format
+    const altStart = repaired.indexOf('{');
+    if (altStart !== -1) {
+      repaired = repaired.substring(altStart);
+    }
+  } else {
+    repaired = repaired.substring(jsonStartIndex);
+  }
+
+  // Try parsing after extracting JSON start
   try {
     return JSON.parse(repaired);
   } catch (e) {
@@ -176,7 +198,13 @@ function tryRepairJSON(jsonString: string): any {
     }
   }
 
-  return JSON.parse(repaired);
+  try {
+    return JSON.parse(repaired);
+  } catch (e) {
+    // Log the problematic content for debugging
+    console.error('Failed to parse JSON. First 500 chars:', repaired.substring(0, 500));
+    throw new Error('Failed to parse AI response as JSON. The model may have returned invalid format.');
+  }
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {

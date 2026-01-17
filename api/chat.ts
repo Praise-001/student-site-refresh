@@ -2,8 +2,8 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 // Available models for load balancing
 const MODELS = [
-  'openai/gpt-oss-120b:free',
-  'google/gemma-3-4b-it:free'
+  'meta-llama/llama-3.3-70b-instruct:free',
+  'google/gemma-2-9b-it:free'
 ];
 
 // Pick a random model
