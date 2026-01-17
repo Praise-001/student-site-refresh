@@ -37,9 +37,12 @@ interface Question {
   topic?: string;
 }
 
-function buildSystemPrompt(config: GenerateRequest['config']): string {
-  const typeDistribution = config.questionTypes.map(type => {
-    const count = Math.ceil(config.questionCount / config.questionTypes.length);
+// Maximum questions per batch to avoid token limits
+const BATCH_SIZE = 25;
+
+function buildSystemPrompt(batchCount: number, questionTypes: string[], difficulty: string): string {
+  const typeDistribution = questionTypes.map(type => {
+    const count = Math.ceil(batchCount / questionTypes.length);
     return `- ${type}: approximately ${count} questions`;
   }).join('\n');
 
@@ -47,11 +50,11 @@ function buildSystemPrompt(config: GenerateRequest['config']): string {
 
 RULES:
 1. Output must be valid JSON only. No markdown, no explanatory text.
-2. Create exactly ${config.questionCount} unique questions - NO REPETITION OR SIMILAR QUESTIONS.
+2. Create exactly ${batchCount} unique questions - NO REPETITION OR SIMILAR QUESTIONS.
 3. Each question must test a DIFFERENT concept or fact from the material.
 4. Question Types:
 ${typeDistribution}
-5. Difficulty: ${config.difficulty}
+5. Difficulty: ${difficulty}
 6. For multiple-choice: Vary which option (A/B/C/D) is correct - do NOT always make the first or last option correct.
 
 JSON SCHEMA:
@@ -70,14 +73,22 @@ JSON SCHEMA:
 }`;
 }
 
-function buildUserPrompt(content: string, config: GenerateRequest['config']): string {
+function buildUserPrompt(
+  content: string,
+  batchCount: number,
+  previousTopics?: string[],
+  previousQuestions?: string[],
+  batchNumber?: number
+): string {
   const avoidSection = [];
-  if (config.previousTopics?.length) {
-    avoidSection.push(`Avoid these topics: ${config.previousTopics.slice(-30).join(', ')}`);
+  if (previousTopics?.length) {
+    avoidSection.push(`Avoid these topics: ${previousTopics.slice(-50).join(', ')}`);
   }
-  if (config.previousQuestions?.length) {
-    avoidSection.push(`DO NOT repeat these questions: ${config.previousQuestions.slice(-30).join(' | ')}`);
+  if (previousQuestions?.length) {
+    avoidSection.push(`DO NOT repeat or rephrase these questions:\n${previousQuestions.slice(-50).join('\n')}`);
   }
+
+  const batchInfo = batchNumber ? `(Batch ${batchNumber}) ` : '';
 
   return `STUDY MATERIAL:
 """
@@ -86,10 +97,86 @@ ${content.slice(0, 25000)}
 
 ${avoidSection.length > 0 ? avoidSection.join('\n\n') : ''}
 
-Generate ${config.questionCount} unique questions based STRICTLY on the text above.
+${batchInfo}Generate ${batchCount} unique questions based STRICTLY on the text above.
 - Only ask about information explicitly stated in the material
 - Cover content from beginning, middle, and end of the material
-- Each question must be directly answerable from the text`;
+- Each question must be directly answerable from the text
+- Do NOT repeat any previously generated questions`;
+}
+
+// Try to repair truncated JSON
+function tryRepairJSON(jsonString: string): any {
+  // First try parsing as-is
+  try {
+    return JSON.parse(jsonString);
+  } catch (e) {
+    // Try to fix common issues
+  }
+
+  let repaired = jsonString.trim();
+
+  // Remove markdown code blocks if present
+  repaired = repaired.replace(/^```json?\s*/i, '').replace(/\s*```$/i, '');
+
+  // Try parsing again after cleanup
+  try {
+    return JSON.parse(repaired);
+  } catch (e) {
+    // Continue with repairs
+  }
+
+  // If truncated, try to close the JSON properly
+  // Count open braces/brackets
+  let braceCount = 0;
+  let bracketCount = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (const char of repaired) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+
+    if (char === '{') braceCount++;
+    if (char === '}') braceCount--;
+    if (char === '[') bracketCount++;
+    if (char === ']') bracketCount--;
+  }
+
+  // If we're in the middle of a string, close it
+  if (inString) {
+    repaired += '"';
+  }
+
+  // Try to find the last complete question and truncate there
+  const lastCompleteQuestion = repaired.lastIndexOf('},');
+  if (lastCompleteQuestion > 0 && (braceCount > 0 || bracketCount > 0)) {
+    repaired = repaired.substring(0, lastCompleteQuestion + 1);
+    // Close the array and object
+    repaired += ']}';
+  } else {
+    // Just close remaining brackets/braces
+    while (bracketCount > 0) {
+      repaired += ']';
+      bracketCount--;
+    }
+    while (braceCount > 0) {
+      repaired += '}';
+      braceCount--;
+    }
+  }
+
+  return JSON.parse(repaired);
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -118,8 +205,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(500).json({ error: 'Server configuration error: API key not set' });
     }
 
-    // Helper function to call OpenRouter API
-    async function callOpenRouter(model: string): Promise<{ content: string; model: string }> {
+    // Helper function to call OpenRouter API for a batch
+    async function callOpenRouterBatch(
+      model: string,
+      batchCount: number,
+      previousQs: string[],
+      batchNumber: number
+    ): Promise<{ questions: any[]; model: string }> {
       const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -131,11 +223,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         body: JSON.stringify({
           model,
           messages: [
-            { role: 'system', content: buildSystemPrompt(config) },
-            { role: 'user', content: buildUserPrompt(extractedText, config) }
+            { role: 'system', content: buildSystemPrompt(batchCount, config.questionTypes, config.difficulty) },
+            { role: 'user', content: buildUserPrompt(
+              extractedText,
+              batchCount,
+              config.previousTopics,
+              [...(config.previousQuestions || []), ...previousQs],
+              batchNumber
+            )}
           ],
-          temperature: 0.5,
-          max_tokens: 16384
+          temperature: 0.6,
+          max_tokens: 8192
         })
       });
 
@@ -149,35 +247,62 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (!content) {
         throw new Error('Empty response from model');
       }
-      return { content, model };
+
+      // Parse with repair capability
+      const parsed = tryRepairJSON(content);
+      if (!parsed.questions || !Array.isArray(parsed.questions)) {
+        throw new Error('Invalid response structure');
+      }
+
+      return { questions: parsed.questions, model };
     }
 
-    // Try primary model, fallback to secondary if it fails
-    const primaryModel = getRandomModel();
-    let responseText: string;
-    let usedModel: string;
+    // Generate questions in batches
+    const totalQuestions = config.questionCount;
+    const numBatches = Math.ceil(totalQuestions / BATCH_SIZE);
+    const allQuestions: any[] = [];
+    const generatedQuestionTexts: string[] = [];
+    let usedModel = '';
 
-    try {
-      const result = await callOpenRouter(primaryModel);
-      responseText = result.content;
-      usedModel = result.model;
-    } catch (primaryError: any) {
-      console.log(`Primary model ${primaryModel} failed, trying fallback...`);
-      const fallbackModel = getFallbackModel(primaryModel);
-      const result = await callOpenRouter(fallbackModel);
-      responseText = result.content;
-      usedModel = result.model;
+    console.log(`Generating ${totalQuestions} questions in ${numBatches} batches of up to ${BATCH_SIZE}`);
+
+    for (let batch = 0; batch < numBatches; batch++) {
+      const remaining = totalQuestions - allQuestions.length;
+      const batchCount = Math.min(BATCH_SIZE, remaining);
+
+      if (batchCount <= 0) break;
+
+      console.log(`Batch ${batch + 1}/${numBatches}: Generating ${batchCount} questions...`);
+
+      // Try primary model, fallback to secondary if it fails
+      const primaryModel = getRandomModel();
+      let batchQuestions: any[];
+
+      try {
+        const result = await callOpenRouterBatch(primaryModel, batchCount, generatedQuestionTexts, batch + 1);
+        batchQuestions = result.questions;
+        usedModel = result.model;
+      } catch (primaryError: any) {
+        console.log(`Primary model ${primaryModel} failed on batch ${batch + 1}, trying fallback...`);
+        const fallbackModel = getFallbackModel(primaryModel);
+        const result = await callOpenRouterBatch(fallbackModel, batchCount, generatedQuestionTexts, batch + 1);
+        batchQuestions = result.questions;
+        usedModel = result.model;
+      }
+
+      // Add to collection and track for deduplication
+      allQuestions.push(...batchQuestions);
+      batchQuestions.forEach((q: any) => {
+        if (q.question) {
+          generatedQuestionTexts.push(q.question.slice(0, 100));
+        }
+      });
+
+      console.log(`Batch ${batch + 1} complete: Got ${batchQuestions.length} questions, total: ${allQuestions.length}`);
     }
 
-    if (!responseText) {
-      throw new Error('OpenRouter returned empty response');
-    }
-
-    // Parse Response
-    const parsed = JSON.parse(responseText);
-
-    if (!parsed.questions || !Array.isArray(parsed.questions)) {
-      throw new Error('Invalid response structure');
+    if (allQuestions.length === 0) {
+      throw new Error('No questions were generated');
     }
 
     // Shuffle array helper using Fisher-Yates algorithm
@@ -195,7 +320,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // Normalize and shuffle options for multiple-choice questions
-    const questions: Question[] = parsed.questions.map((q: any, index: number) => {
+    const questions: Question[] = allQuestions.map((q: any, index: number) => {
       const type = q.type || 'multiple-choice';
       let options = Array.isArray(q.options) ? q.options : [];
       let correctAnswer = q.correctAnswer ?? 0;
