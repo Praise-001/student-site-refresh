@@ -1,9 +1,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-// Available models for load balancing (prioritize models good at JSON)
+// Available free models on OpenRouter (verified working)
 const MODELS = [
-  'meta-llama/llama-3.3-70b-instruct:free',
-  'google/gemma-2-9b-it:free'
+  'qwen/qwen-2.5-72b-instruct:free',
+  'meta-llama/llama-3.2-3b-instruct:free'
 ];
 
 // Pick a random model
@@ -271,15 +271,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       const completion = await response.json();
-      const content = completion.choices[0]?.message?.content;
+
+      // Check for API errors
+      if (completion.error) {
+        console.error('OpenRouter API error:', completion.error);
+        throw new Error(completion.error.message || 'API returned an error');
+      }
+
+      const content = completion.choices?.[0]?.message?.content;
       if (!content) {
+        console.error('Empty or missing content in response:', JSON.stringify(completion).substring(0, 500));
         throw new Error('Empty response from model');
       }
+
+      console.log('Raw response (first 300 chars):', content.substring(0, 300));
 
       // Parse with repair capability
       const parsed = tryRepairJSON(content);
       if (!parsed.questions || !Array.isArray(parsed.questions)) {
-        throw new Error('Invalid response structure');
+        console.error('Invalid structure after parsing:', JSON.stringify(parsed).substring(0, 500));
+        throw new Error('Invalid response structure - no questions array');
       }
 
       return { questions: parsed.questions, model };
@@ -395,8 +406,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(429).json({ error: 'Rate limit exceeded. Please try again in a moment.' });
     }
 
+    // Include more detail for debugging
+    const errorMsg = error.message || 'Failed to generate questions';
+    console.error('Final error:', errorMsg);
+
     return res.status(500).json({
-      error: error.message || 'Failed to generate questions. Please try again.'
+      error: `${errorMsg}. Please try again or try with fewer questions.`
     });
   }
 }

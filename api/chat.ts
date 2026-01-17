@@ -1,9 +1,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-// Available models for load balancing
+// Available free models on OpenRouter (verified working)
 const MODELS = [
-  'meta-llama/llama-3.3-70b-instruct:free',
-  'google/gemma-2-9b-it:free'
+  'qwen/qwen-2.5-72b-instruct:free',
+  'meta-llama/llama-3.2-3b-instruct:free'
 ];
 
 // Pick a random model
