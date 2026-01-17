@@ -37,8 +37,8 @@ interface Question {
   topic?: string;
 }
 
-// Maximum questions per batch to avoid token limits
-const BATCH_SIZE = 25;
+// Maximum questions per batch (larger = fewer API calls = faster)
+const BATCH_SIZE = 35;
 
 function buildSystemPrompt(batchCount: number, questionTypes: string[], difficulty: string): string {
   const typeDistribution = questionTypes.map(type => {
@@ -296,52 +296,54 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return { questions: parsed.questions, model };
     }
 
-    // Generate questions in batches
+    // Generate questions in PARALLEL batches for speed
     const totalQuestions = config.questionCount;
     const numBatches = Math.ceil(totalQuestions / BATCH_SIZE);
-    const allQuestions: any[] = [];
-    const generatedQuestionTexts: string[] = [];
     let usedModel = '';
 
-    console.log(`Generating ${totalQuestions} questions in ${numBatches} batches of up to ${BATCH_SIZE}`);
+    console.log(`Generating ${totalQuestions} questions in ${numBatches} PARALLEL batches of up to ${BATCH_SIZE}`);
 
-    for (let batch = 0; batch < numBatches; batch++) {
-      const remaining = totalQuestions - allQuestions.length;
-      const batchCount = Math.min(BATCH_SIZE, remaining);
+    // Create all batch promises at once for parallel execution
+    const batchPromises = Array.from({ length: numBatches }, async (_, batch) => {
+      const batchCount = batch === numBatches - 1
+        ? totalQuestions - (batch * BATCH_SIZE)
+        : BATCH_SIZE;
 
-      if (batchCount <= 0) break;
+      if (batchCount <= 0) return [];
 
       console.log(`Batch ${batch + 1}/${numBatches}: Generating ${batchCount} questions...`);
 
       // Try primary model, fallback to secondary if it fails
       const primaryModel = getRandomModel();
-      let batchQuestions: any[];
 
       try {
-        const result = await callOpenRouterBatch(primaryModel, batchCount, generatedQuestionTexts, batch + 1);
-        batchQuestions = result.questions;
+        const result = await callOpenRouterBatch(primaryModel, batchCount, [], batch + 1);
         usedModel = result.model;
+        console.log(`Batch ${batch + 1} complete with ${result.questions.length} questions`);
+        return result.questions;
       } catch (primaryError: any) {
         console.log(`Primary model ${primaryModel} failed on batch ${batch + 1}, trying fallback...`);
-        const fallbackModel = getFallbackModel(primaryModel);
-        const result = await callOpenRouterBatch(fallbackModel, batchCount, generatedQuestionTexts, batch + 1);
-        batchQuestions = result.questions;
-        usedModel = result.model;
-      }
-
-      // Add to collection and track for deduplication
-      allQuestions.push(...batchQuestions);
-      batchQuestions.forEach((q: any) => {
-        if (q.question) {
-          generatedQuestionTexts.push(q.question.slice(0, 100));
+        try {
+          const fallbackModel = getFallbackModel(primaryModel);
+          const result = await callOpenRouterBatch(fallbackModel, batchCount, [], batch + 1);
+          usedModel = result.model;
+          console.log(`Batch ${batch + 1} complete with fallback: ${result.questions.length} questions`);
+          return result.questions;
+        } catch (fallbackError: any) {
+          console.error(`Batch ${batch + 1} failed completely:`, fallbackError.message);
+          return []; // Return empty array instead of failing entire request
         }
-      });
+      }
+    });
 
-      console.log(`Batch ${batch + 1} complete: Got ${batchQuestions.length} questions, total: ${allQuestions.length}`);
-    }
+    // Wait for all batches to complete in parallel
+    const batchResults = await Promise.all(batchPromises);
+    const allQuestions = batchResults.flat();
+
+    console.log(`All batches complete. Total questions: ${allQuestions.length}`);
 
     if (allQuestions.length === 0) {
-      throw new Error('No questions were generated');
+      throw new Error('No questions were generated. The AI models may be unavailable.');
     }
 
     // Shuffle array helper using Fisher-Yates algorithm

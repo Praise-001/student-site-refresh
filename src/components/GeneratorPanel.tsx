@@ -44,7 +44,7 @@ export const GeneratorPanel = ({
   onExtractedContent
 }: GeneratorPanelProps) => {
   const [selectedTypes, setSelectedTypes] = useState<string[]>(["multiple-choice", "fill-blank"]);
-  const [questionCount, setQuestionCount] = useState(100);
+  const [questionCount, setQuestionCount] = useState(50);
   const [difficulty, setDifficulty] = useState("medium");
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationProgress, setGenerationProgress] = useState("");
