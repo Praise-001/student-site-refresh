@@ -1,8 +1,38 @@
-import Tesseract from 'tesseract.js';
+import { createWorker, Worker } from 'tesseract.js';
 
 export interface ImageExtractionResult {
   text: string;
   confidence: number;
+}
+
+// Persistent Tesseract worker for faster OCR
+let tesseractWorker: Worker | null = null;
+let workerInitializing = false;
+
+async function getTesseractWorker(): Promise<Worker> {
+  if (tesseractWorker) {
+    return tesseractWorker;
+  }
+
+  if (workerInitializing) {
+    while (workerInitializing) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return tesseractWorker!;
+  }
+
+  workerInitializing = true;
+  try {
+    tesseractWorker = await createWorker('eng', 1, {
+      workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
+      corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
+      langPath: 'https://tessdata.projectnaptha.com/4.0.0',
+      cacheMethod: 'readOnly',
+    });
+    return tesseractWorker;
+  } finally {
+    workerInitializing = false;
+  }
 }
 
 /**
@@ -13,17 +43,12 @@ export async function extractTextFromImage(
   onProgress?: (progress: number) => void
 ): Promise<ImageExtractionResult> {
   try {
-    const result = await Tesseract.recognize(
-      imageSource,
-      'eng', // English language
-      {
-        logger: (m) => {
-          if (m.status === 'recognizing text' && onProgress) {
-            onProgress(Math.round(m.progress * 100));
-          }
-        },
-      }
-    );
+    onProgress?.(10); // Show initial progress
+    const worker = await getTesseractWorker();
+    onProgress?.(30);
+
+    const result = await worker.recognize(imageSource);
+    onProgress?.(100);
 
     return {
       text: result.data.text.trim(),

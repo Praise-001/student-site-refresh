@@ -1,7 +1,7 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import mammoth from 'mammoth';
 import JSZip from 'jszip';
-import Tesseract from 'tesseract.js';
+import Tesseract, { createWorker, Worker } from 'tesseract.js';
 
 // For pdfjs-dist v5.x, we need to import the worker directly
 // This tells Vite to bundle the worker properly
@@ -9,6 +9,39 @@ import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 // Set up PDF.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+
+// Persistent Tesseract worker for faster OCR
+let tesseractWorker: Worker | null = null;
+let workerInitializing = false;
+
+async function getTesseractWorker(): Promise<Worker> {
+  if (tesseractWorker) {
+    return tesseractWorker;
+  }
+
+  if (workerInitializing) {
+    // Wait for existing initialization
+    while (workerInitializing) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return tesseractWorker!;
+  }
+
+  workerInitializing = true;
+  try {
+    console.log('Initializing Tesseract worker...');
+    tesseractWorker = await createWorker('eng', 1, {
+      workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
+      corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
+      langPath: 'https://tessdata.projectnaptha.com/4.0.0',
+      cacheMethod: 'readOnly', // Use browser cache
+    });
+    console.log('Tesseract worker ready');
+    return tesseractWorker;
+  } finally {
+    workerInitializing = false;
+  }
+}
 
 // OCR progress callback type
 type OCRProgressCallback = (progress: number, message: string) => void;
@@ -78,23 +111,14 @@ async function pdfPageToImage(page: any, scale: number = 2.0): Promise<string> {
   return canvas.toDataURL('image/jpeg', 0.95);
 }
 
-// Perform OCR on a single image with retry logic
-async function performOCR(imageDataUrl: string, retries: number = 2): Promise<string> {
+// Perform OCR on a single image using persistent worker
+async function performOCR(imageDataUrl: string, retries: number = 1): Promise<string> {
+  const worker = await getTesseractWorker();
   let lastError: any = null;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const result = await Tesseract.recognize(
-        imageDataUrl,
-        'eng',
-        {
-          logger: (m) => {
-            if (m.status === 'recognizing text' && m.progress > 0) {
-              console.log(`OCR Progress: ${Math.round(m.progress * 100)}%`);
-            }
-          }
-        }
-      );
+      const result = await worker.recognize(imageDataUrl);
 
       // Check if we got valid text
       if (result?.data?.text) {
@@ -107,8 +131,7 @@ async function performOCR(imageDataUrl: string, retries: number = 2): Promise<st
       console.error(`OCR attempt ${attempt + 1} failed:`, error?.message || error);
 
       if (attempt < retries) {
-        // Wait a bit before retrying
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, 300));
       }
     }
   }
@@ -146,43 +169,64 @@ async function extractFromPDF(file: File, onProgress?: OCRProgressCallback): Pro
     // If we got very little text, try OCR
     if (wordCount < 50 && pdf.numPages > 0) {
       console.log('PDF has little extractable text, attempting OCR...');
-      onProgress?.(0, 'Scanned PDF detected, starting OCR...');
+      onProgress?.(0, 'Scanned PDF detected, initializing OCR...');
 
-      let ocrText = '';
+      // Pre-initialize the worker to avoid delay on first page
+      await getTesseractWorker();
+
+      const ocrResults: { pageNum: number; text: string }[] = [];
       let ocrErrors: string[] = [];
-      let successfulPages = 0;
+      let completedPages = 0;
 
-      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-        onProgress?.(
-          (pageNum - 1) / pdf.numPages * 100,
-          `Running OCR on page ${pageNum} of ${pdf.numPages}...`
-        );
-
-        try {
-          const page = await pdf.getPage(pageNum);
-          console.log(`Rendering page ${pageNum} to image...`);
-          const imageDataUrl = await pdfPageToImage(page, 2.5); // Higher scale for better OCR
-          console.log(`Running OCR on page ${pageNum}...`);
-          const pageOcrText = await performOCR(imageDataUrl);
-
-          if (pageOcrText.trim()) {
-            ocrText += `[Page ${pageNum}]\n${pageOcrText}\n\n`;
-            successfulPages++;
-            console.log(`Page ${pageNum} OCR extracted ${countWords(pageOcrText)} words`);
-          } else {
-            console.log(`Page ${pageNum} OCR returned empty text`);
-          }
-        } catch (ocrError: any) {
-          const errorMsg = ocrError?.message || String(ocrError);
-          console.error(`OCR failed for page ${pageNum}:`, errorMsg);
-          ocrErrors.push(`Page ${pageNum}: ${errorMsg}`);
+      // Process pages in batches of 2 for parallel processing (memory-safe)
+      const batchSize = 2;
+      for (let i = 1; i <= pdf.numPages; i += batchSize) {
+        const batch = [];
+        for (let j = i; j < i + batchSize && j <= pdf.numPages; j++) {
+          batch.push(j);
         }
+
+        const batchPromises = batch.map(async (pageNum) => {
+          try {
+            const page = await pdf.getPage(pageNum);
+            const imageDataUrl = await pdfPageToImage(page, 2.0); // Reduced scale for speed
+            const pageOcrText = await performOCR(imageDataUrl);
+
+            completedPages++;
+            onProgress?.(
+              (completedPages / pdf.numPages) * 100,
+              `OCR: ${completedPages}/${pdf.numPages} pages done`
+            );
+
+            if (pageOcrText.trim()) {
+              return { pageNum, text: pageOcrText };
+            }
+            return null;
+          } catch (ocrError: any) {
+            const errorMsg = ocrError?.message || String(ocrError);
+            console.error(`OCR failed for page ${pageNum}:`, errorMsg);
+            ocrErrors.push(`Page ${pageNum}: ${errorMsg}`);
+            completedPages++;
+            return null;
+          }
+        });
+
+        const batchResults = await Promise.all(batchPromises);
+        batchResults.forEach(result => {
+          if (result) ocrResults.push(result);
+        });
       }
 
       onProgress?.(100, 'OCR complete');
 
+      // Sort by page number and combine
+      ocrResults.sort((a, b) => a.pageNum - b.pageNum);
+      const ocrText = ocrResults
+        .map(r => `[Page ${r.pageNum}]\n${r.text}`)
+        .join('\n\n');
+
       const ocrWordCount = countWords(ocrText);
-      console.log(`OCR complete: ${ocrWordCount} words from ${successfulPages}/${pdf.numPages} pages`);
+      console.log(`OCR complete: ${ocrWordCount} words from ${ocrResults.length}/${pdf.numPages} pages`);
 
       if (ocrWordCount > wordCount) {
         console.log('OCR extracted more text than regular extraction');
