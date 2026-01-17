@@ -47,10 +47,12 @@ function buildSystemPrompt(config: GenerateRequest['config']): string {
 
 RULES:
 1. Output must be valid JSON only. No markdown, no explanatory text.
-2. Create exactly ${config.questionCount} questions.
-3. Question Types:
+2. Create exactly ${config.questionCount} unique questions - NO REPETITION OR SIMILAR QUESTIONS.
+3. Each question must test a DIFFERENT concept or fact from the material.
+4. Question Types:
 ${typeDistribution}
-4. Difficulty: ${config.difficulty}
+5. Difficulty: ${config.difficulty}
+6. For multiple-choice: Vary which option (A/B/C/D) is correct - do NOT always make the first or last option correct.
 
 JSON SCHEMA:
 {
