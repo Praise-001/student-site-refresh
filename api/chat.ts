@@ -1,5 +1,20 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import Groq from 'groq-sdk';
+
+// Available models for load balancing
+const MODELS = [
+  'openai/gpt-oss-120b:free',
+  'google/gemma-3-4b-it:free'
+];
+
+// Pick a random model
+function getRandomModel(): string {
+  return MODELS[Math.floor(Math.random() * MODELS.length)];
+}
+
+// Get fallback model (the other one)
+function getFallbackModel(currentModel: string): string {
+  return MODELS.find(m => m !== currentModel) || MODELS[0];
+}
 
 interface ChatRequest {
   message: string;
@@ -49,13 +64,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // Get API key from environment variable
-    const apiKey = process.env.GROQ_API_KEY;
+    const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
       return res.status(500).json({ error: 'Server configuration error: API key not set' });
     }
-
-    // Initialize Groq Client
-    const groq = new Groq({ apiKey });
 
     // Build messages array with history
     const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
@@ -73,22 +85,57 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Add current message
     messages.push({ role: 'user', content: message });
 
-    const completion = await groq.chat.completions.create({
-      messages,
-      model: 'llama-3.3-70b-versatile',
-      temperature: 0.7,
-      max_tokens: 4096,
-    });
+    // Helper function to call OpenRouter API
+    async function callOpenRouter(model: string): Promise<{ content: string; model: string }> {
+      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://studywiz.app',
+          'X-Title': 'StudyWiz'
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature: 0.7,
+          max_tokens: 4096
+        })
+      });
 
-    const responseText = completion.choices[0]?.message?.content;
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw { status: response.status, message: errorData.error?.message || response.statusText };
+      }
 
-    if (!responseText) {
-      throw new Error('No response from AI');
+      const completion = await response.json();
+      const content = completion.choices[0]?.message?.content;
+      if (!content) {
+        throw new Error('Empty response from model');
+      }
+      return { content, model };
+    }
+
+    // Try primary model, fallback to secondary if it fails
+    const primaryModel = getRandomModel();
+    let responseText: string;
+    let usedModel: string;
+
+    try {
+      const result = await callOpenRouter(primaryModel);
+      responseText = result.content;
+      usedModel = result.model;
+    } catch (primaryError: any) {
+      console.log(`Primary model ${primaryModel} failed, trying fallback...`);
+      const fallbackModel = getFallbackModel(primaryModel);
+      const result = await callOpenRouter(fallbackModel);
+      responseText = result.content;
+      usedModel = result.model;
     }
 
     return res.status(200).json({
       response: responseText,
-      model: 'llama-3.3-70b-versatile'
+      model: usedModel
     });
 
   } catch (error: any) {

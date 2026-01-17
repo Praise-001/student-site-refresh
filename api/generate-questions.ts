@@ -1,5 +1,20 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import Groq from 'groq-sdk';
+
+// Available models for load balancing
+const MODELS = [
+  'openai/gpt-oss-120b:free',
+  'google/gemma-3-4b-it:free'
+];
+
+// Pick a random model
+function getRandomModel(): string {
+  return MODELS[Math.floor(Math.random() * MODELS.length)];
+}
+
+// Get fallback model (the other one)
+function getFallbackModel(currentModel: string): string {
+  return MODELS.find(m => m !== currentModel) || MODELS[0];
+}
 
 interface GenerateRequest {
   extractedText: string;
@@ -96,29 +111,64 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // Get API key from environment variable
-    const apiKey = process.env.GROQ_API_KEY;
+    const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
       return res.status(500).json({ error: 'Server configuration error: API key not set' });
     }
 
-    // Initialize Groq Client
-    const groq = new Groq({ apiKey });
+    // Helper function to call OpenRouter API
+    async function callOpenRouter(model: string): Promise<{ content: string; model: string }> {
+      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://studywiz.app',
+          'X-Title': 'StudyWiz'
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: buildSystemPrompt(config) },
+            { role: 'user', content: buildUserPrompt(extractedText, config) }
+          ],
+          temperature: 0.5,
+          max_tokens: 16384
+        })
+      });
 
-    const completion = await groq.chat.completions.create({
-      messages: [
-        { role: 'system', content: buildSystemPrompt(config) },
-        { role: 'user', content: buildUserPrompt(extractedText, config) }
-      ],
-      model: 'llama-3.3-70b-versatile',
-      temperature: 0.5,
-      max_tokens: 16384,
-      response_format: { type: 'json_object' },
-    });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw { status: response.status, message: errorData.error?.message || response.statusText };
+      }
 
-    const responseText = completion.choices[0]?.message?.content;
+      const completion = await response.json();
+      const content = completion.choices[0]?.message?.content;
+      if (!content) {
+        throw new Error('Empty response from model');
+      }
+      return { content, model };
+    }
+
+    // Try primary model, fallback to secondary if it fails
+    const primaryModel = getRandomModel();
+    let responseText: string;
+    let usedModel: string;
+
+    try {
+      const result = await callOpenRouter(primaryModel);
+      responseText = result.content;
+      usedModel = result.model;
+    } catch (primaryError: any) {
+      console.log(`Primary model ${primaryModel} failed, trying fallback...`);
+      const fallbackModel = getFallbackModel(primaryModel);
+      const result = await callOpenRouter(fallbackModel);
+      responseText = result.content;
+      usedModel = result.model;
+    }
 
     if (!responseText) {
-      throw new Error('Groq returned empty response');
+      throw new Error('OpenRouter returned empty response');
     }
 
     // Parse Response
@@ -171,12 +221,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       questions,
       metadata: {
         generatedCount: questions.length,
-        model: 'llama-3.3-70b-versatile'
+        model: usedModel
       }
     });
 
   } catch (error: any) {
-    console.error('Groq Generation Error:', error);
+    console.error('OpenRouter Generation Error:', error);
 
     if (error.status === 401 || error.message?.includes('API key') || error.message?.includes('authentication')) {
       return res.status(401).json({ error: 'Invalid API Key. Please check server configuration.' });
