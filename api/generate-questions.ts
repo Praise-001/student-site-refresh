@@ -1,20 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-// Available free models on OpenRouter (verified working)
-const MODELS = [
-  'qwen/qwen-2.5-72b-instruct:free',
-  'meta-llama/llama-3.2-3b-instruct:free'
-];
-
-// Pick a random model
-function getRandomModel(): string {
-  return MODELS[Math.floor(Math.random() * MODELS.length)];
-}
-
-// Get fallback model (the other one)
-function getFallbackModel(currentModel: string): string {
-  return MODELS.find(m => m !== currentModel) || MODELS[0];
-}
+// Use OpenRouter's free auto-router — it picks the best available free model automatically
+const MODEL = 'openrouter/free';
 
 interface GenerateRequest {
   extractedText: string;
@@ -53,11 +40,12 @@ CRITICAL: Your response must be ONLY a JSON object. No markdown, no \`\`\`, no e
 RULES:
 1. Output ONLY valid JSON - nothing else.
 2. Create exactly ${batchCount} unique questions.
-3. Each question must test a DIFFERENT concept.
+3. CRITICAL: Each question MUST test a completely DIFFERENT concept, fact, or idea. NEVER ask the same thing in different wording.
 4. Question Types:
 ${typeDistribution}
 5. Difficulty: ${difficulty}
 6. For multiple-choice: Vary correct answer positions.
+7. NO two questions should be about the same topic or testable concept.
 
 REQUIRED JSON FORMAT (output EXACTLY this structure):
 {
@@ -296,49 +284,55 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return { questions: parsed.questions, model };
     }
 
-    // Generate questions in PARALLEL batches for speed
+    // Generate questions in sequential batches with delays to respect rate limits
     const totalQuestions = config.questionCount;
     const numBatches = Math.ceil(totalQuestions / BATCH_SIZE);
     let usedModel = '';
+    const allQuestions: any[] = [];
 
-    console.log(`Generating ${totalQuestions} questions in ${numBatches} PARALLEL batches of up to ${BATCH_SIZE}`);
+    console.log(`Generating ${totalQuestions} questions in ${numBatches} sequential batches of up to ${BATCH_SIZE}`);
 
-    // Create all batch promises at once for parallel execution
-    const batchPromises = Array.from({ length: numBatches }, async (_, batch) => {
+    // Helper: wait with exponential backoff on rate limit
+    const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+    async function runBatchWithRetry(batch: number, batchCount: number, previousQs: string[]): Promise<any[]> {
+      const maxRetries = 2;
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          console.log(`Batch ${batch + 1}/${numBatches}: attempt ${attempt + 1} (avoiding ${previousQs.length} previous questions)...`);
+          const result = await callOpenRouterBatch(MODEL, batchCount, previousQs, batch + 1);
+          usedModel = result.model;
+          console.log(`Batch ${batch + 1} complete with ${result.questions.length} questions`);
+          return result.questions;
+        } catch (error: any) {
+          console.log(`Batch ${batch + 1} attempt ${attempt + 1} failed: ${error.message}`);
+          if (attempt < maxRetries) {
+            await delay(3000);
+          }
+        }
+      }
+      console.error(`Batch ${batch + 1} failed after all retries`);
+      return [];
+    }
+
+    for (let batch = 0; batch < numBatches; batch++) {
       const batchCount = batch === numBatches - 1
         ? totalQuestions - (batch * BATCH_SIZE)
         : BATCH_SIZE;
 
-      if (batchCount <= 0) return [];
+      if (batchCount <= 0) continue;
 
-      console.log(`Batch ${batch + 1}/${numBatches}: Generating ${batchCount} questions...`);
-
-      // Try primary model, fallback to secondary if it fails
-      const primaryModel = getRandomModel();
-
-      try {
-        const result = await callOpenRouterBatch(primaryModel, batchCount, [], batch + 1);
-        usedModel = result.model;
-        console.log(`Batch ${batch + 1} complete with ${result.questions.length} questions`);
-        return result.questions;
-      } catch (primaryError: any) {
-        console.log(`Primary model ${primaryModel} failed on batch ${batch + 1}, trying fallback...`);
-        try {
-          const fallbackModel = getFallbackModel(primaryModel);
-          const result = await callOpenRouterBatch(fallbackModel, batchCount, [], batch + 1);
-          usedModel = result.model;
-          console.log(`Batch ${batch + 1} complete with fallback: ${result.questions.length} questions`);
-          return result.questions;
-        } catch (fallbackError: any) {
-          console.error(`Batch ${batch + 1} failed completely:`, fallbackError.message);
-          return []; // Return empty array instead of failing entire request
-        }
+      // Add delay between batches to avoid rate limits
+      if (batch > 0) {
+        console.log('Waiting 3s between batches...');
+        await delay(3000);
       }
-    });
 
-    // Wait for all batches to complete in parallel
-    const batchResults = await Promise.all(batchPromises);
-    const allQuestions = batchResults.flat();
+      // Pass previously generated question texts so the AI avoids repeating them
+      const previousQsForBatch = allQuestions.map((q: any) => q.question).filter(Boolean);
+      const questions = await runBatchWithRetry(batch, batchCount, previousQsForBatch);
+      allQuestions.push(...questions);
+    }
 
     console.log(`All batches complete. Total questions: ${allQuestions.length}`);
 
@@ -360,8 +354,49 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return { shuffled, originalIndices: indices };
     }
 
+    // Deduplicate questions using multiple strategies
+    function normalizeQuestion(text: string): string {
+      return text.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+    }
+
+    function getKeyWords(text: string): string[] {
+      const stopWords = new Set(['the', 'is', 'are', 'was', 'were', 'what', 'which', 'how', 'does', 'did', 'can', 'will', 'would', 'should', 'could', 'has', 'have', 'had', 'been', 'being', 'this', 'that', 'these', 'those', 'with', 'from', 'for', 'and', 'but', 'not', 'you', 'your', 'its', 'his', 'her', 'their', 'our', 'about', 'into', 'over', 'after', 'before', 'between', 'under', 'above', 'below', 'following', 'true', 'false']);
+      return normalizeQuestion(text)
+        .split(' ')
+        .filter(w => w.length > 2 && !stopWords.has(w));
+    }
+
+    function isTooSimilar(q1: string, q2: string): boolean {
+      const words1 = getKeyWords(q1);
+      const words2 = getKeyWords(q2);
+      if (words1.length === 0 || words2.length === 0) return false;
+      const set2 = new Set(words2);
+      const overlap = words1.filter(w => set2.has(w)).length;
+      const similarity = overlap / Math.max(words1.length, words2.length);
+      return similarity >= 0.7;
+    }
+
+    const seenNormalized = new Set<string>();
+    const acceptedQuestions: any[] = [];
+    const uniqueQuestions = allQuestions.filter((q: any) => {
+      const text = q.question || '';
+      const normalized = normalizeQuestion(text).replace(/\s/g, '').slice(0, 120);
+      if (!normalized || seenNormalized.has(normalized)) return false;
+
+      // Check similarity against all already-accepted questions
+      for (const accepted of acceptedQuestions) {
+        if (isTooSimilar(text, accepted.question)) return false;
+      }
+
+      seenNormalized.add(normalized);
+      acceptedQuestions.push(q);
+      return true;
+    });
+
+    console.log(`Deduplication: ${allQuestions.length} -> ${uniqueQuestions.length} unique questions`);
+
     // Normalize and shuffle options for multiple-choice questions
-    const questions: Question[] = allQuestions.map((q: any, index: number) => {
+    const questions: Question[] = uniqueQuestions.map((q: any, index: number) => {
       const type = q.type || 'multiple-choice';
       let options = Array.isArray(q.options) ? q.options : [];
       let correctAnswer = q.correctAnswer ?? 0;

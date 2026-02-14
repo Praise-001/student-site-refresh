@@ -1,9 +1,18 @@
 import { useState } from "react";
-import { FileQuestion, ArrowLeft, CheckCircle2, FileText, ChevronRight, RotateCcw, Lightbulb } from "lucide-react";
+import { FileQuestion, ArrowLeft, CheckCircle2, XCircle, FileText, ChevronRight, RotateCcw, Lightbulb, ClipboardList } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { GeneratedQuizData, Question } from "./GeneratorPanel";
 import { MathText } from "./MathRenderer";
+import { cn } from "@/lib/utils";
+import { saveQuizResult } from "@/lib/quizHistory";
+
+interface UserAnswer {
+  questionIndex: number;
+  selectedOption: number | null; // for MC/TF
+  textInput: string; // for fill-blank/short-answer
+  isCorrect: boolean;
+}
 
 interface PracticeViewProps {
   quizData: GeneratedQuizData | null;
@@ -17,8 +26,10 @@ export const PracticeView = ({ quizData, onGoToGenerate }: PracticeViewProps) =>
   const [textAnswer, setTextAnswer] = useState("");
   const [isAnswerSubmitted, setIsAnswerSubmitted] = useState(false);
   const [showResult, setShowResult] = useState(false);
+  const [showReview, setShowReview] = useState(false);
   const [score, setScore] = useState(0);
   const [showExplanation, setShowExplanation] = useState(false);
+  const [userAnswers, setUserAnswers] = useState<UserAnswer[]>([]);
 
   // Use questions directly from quizData (AI-generated)
   const questions = quizData?.questions || [];
@@ -31,17 +42,26 @@ export const PracticeView = ({ quizData, onGoToGenerate }: PracticeViewProps) =>
       setTextAnswer("");
       setIsAnswerSubmitted(false);
       setShowResult(false);
+      setShowReview(false);
       setScore(0);
       setShowExplanation(false);
+      setUserAnswers([]);
     }
   };
 
   const handleAnswerSelect = (index: number) => {
     if (selectedAnswer === null) {
       setSelectedAnswer(index);
-      if (index === questions[currentQuestionIndex].correctAnswer) {
+      const isCorrect = index === questions[currentQuestionIndex].correctAnswer;
+      if (isCorrect) {
         setScore(prev => prev + 1);
       }
+      setUserAnswers(prev => [...prev, {
+        questionIndex: currentQuestionIndex,
+        selectedOption: index,
+        textInput: '',
+        isCorrect,
+      }]);
     }
   };
 
@@ -64,6 +84,12 @@ export const PracticeView = ({ quizData, onGoToGenerate }: PracticeViewProps) =>
       if (isCorrect) {
         setScore(prev => prev + 1);
       }
+      setUserAnswers(prev => [...prev, {
+        questionIndex: currentQuestionIndex,
+        selectedOption: null,
+        textInput: textAnswer.trim(),
+        isCorrect,
+      }]);
     }
   };
 
@@ -76,6 +102,20 @@ export const PracticeView = ({ quizData, onGoToGenerate }: PracticeViewProps) =>
       setShowExplanation(false);
     } else {
       setShowResult(true);
+      // Save to history
+      if (quizData) {
+        const finalScore = score;
+        const total = questions.length;
+        saveQuizResult({
+          sourceFiles: quizData.files.map(f => f.name),
+          questionCount: total,
+          difficulty: quizData.difficulty,
+          questionTypes: quizData.questionTypes,
+          score: finalScore,
+          totalQuestions: total,
+          percentage: Math.round((finalScore / total) * 100),
+        });
+      }
     }
   };
 
@@ -86,8 +126,10 @@ export const PracticeView = ({ quizData, onGoToGenerate }: PracticeViewProps) =>
     setTextAnswer("");
     setIsAnswerSubmitted(false);
     setShowResult(false);
+    setShowReview(false);
     setScore(0);
     setShowExplanation(false);
+    setUserAnswers([]);
   };
 
   const isCurrentQuestionAnswered = () => {
@@ -117,6 +159,99 @@ export const PracticeView = ({ quizData, onGoToGenerate }: PracticeViewProps) =>
     );
   }
 
+  // Show answer review
+  if (isPracticing && showReview) {
+    return (
+      <div className="max-w-2xl mx-auto py-8 px-4">
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-xl font-bold text-foreground">Review Answers</h2>
+          <Button onClick={() => setShowReview(false)} variant="outline" size="sm" className="rounded-xl">
+            <ArrowLeft className="w-4 h-4 mr-1" />
+            Back to Results
+          </Button>
+        </div>
+
+        <div className="space-y-4">
+          {questions.map((q, idx) => {
+            const answer = userAnswers.find(a => a.questionIndex === idx);
+            const isCorrect = answer?.isCorrect ?? false;
+
+            return (
+              <div
+                key={idx}
+                className={cn(
+                  "p-4 rounded-xl border",
+                  isCorrect
+                    ? "border-green-500/30 bg-green-500/5"
+                    : "border-red-500/30 bg-red-500/5"
+                )}
+              >
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5">
+                    {isCorrect ? (
+                      <CheckCircle2 className="w-5 h-5 text-green-500" />
+                    ) : (
+                      <XCircle className="w-5 h-5 text-red-500" />
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-muted-foreground mb-1">Question {idx + 1}</p>
+                    <p className="text-sm font-medium text-foreground mb-2">
+                      <MathText text={q.question} />
+                    </p>
+
+                    {/* Show user's answer */}
+                    {(q.type === 'multiple-choice' || q.type === 'true-false') && answer?.selectedOption != null && (
+                      <div className="text-sm space-y-1">
+                        <p>
+                          <span className="text-muted-foreground">Your answer: </span>
+                          <span className={isCorrect ? "text-green-500" : "text-red-500"}>
+                            {q.options[answer.selectedOption]}
+                          </span>
+                        </p>
+                        {!isCorrect && (
+                          <p>
+                            <span className="text-muted-foreground">Correct answer: </span>
+                            <span className="text-green-500">
+                              {q.options[q.correctAnswer as number]}
+                            </span>
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {(q.type === 'fill-blank' || q.type === 'short-answer') && answer && (
+                      <div className="text-sm space-y-1">
+                        <p>
+                          <span className="text-muted-foreground">Your answer: </span>
+                          <span className={isCorrect ? "text-green-500" : "text-red-500"}>
+                            {answer.textInput || '(no answer)'}
+                          </span>
+                        </p>
+                        {!isCorrect && (
+                          <p>
+                            <span className="text-muted-foreground">Correct answer: </span>
+                            <span className="text-green-500">{String(q.correctAnswer)}</span>
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {q.explanation && (
+                      <p className="text-xs text-muted-foreground mt-2 p-2 rounded-lg bg-secondary/50">
+                        <MathText text={q.explanation} />
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
   // Show results after completing quiz
   if (isPracticing && showResult) {
     const percentage = Math.round((score / questions.length) * 100);
@@ -140,6 +275,10 @@ export const PracticeView = ({ quizData, onGoToGenerate }: PracticeViewProps) =>
         </div>
 
         <div className="flex gap-3">
+          <Button onClick={() => setShowReview(true)} variant="outline" className="rounded-xl">
+            <ClipboardList className="w-4 h-4 mr-2" />
+            Review Answers
+          </Button>
           <Button onClick={resetQuiz} variant="outline" className="rounded-xl">
             <RotateCcw className="w-4 h-4 mr-2" />
             Try Again

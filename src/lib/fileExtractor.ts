@@ -2,6 +2,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 import mammoth from 'mammoth';
 import JSZip from 'jszip';
 import Tesseract, { createWorker, Worker } from 'tesseract.js';
+import * as CFB from 'cfb';
 
 // For pdfjs-dist v5.x, we need to import the worker directly
 // This tells Vite to bundle the worker properly
@@ -263,8 +264,126 @@ async function extractFromTXT(file: File): Promise<string> {
   });
 }
 
-// Extract text from PPT/PPTX
-async function extractFromPPT(file: File): Promise<string> {
+// Check if a string looks like readable text (not binary garbage)
+function isReadableText(text: string): boolean {
+  if (text.length === 0) return false;
+  // Count printable ASCII + common unicode characters
+  let printable = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if ((code >= 0x20 && code <= 0x7E) || code === 0x0A || code === 0x0D || code === 0x09 ||
+        (code >= 0x00A0 && code <= 0xFFFF)) {
+      printable++;
+    }
+  }
+  // At least 80% of characters should be printable
+  return (printable / text.length) >= 0.8;
+}
+
+// Extract text from binary PPT (PowerPoint 97-2003) using OLE2 parsing
+async function extractFromPPTBinary(file: File): Promise<string> {
+  const arrayBuffer = await file.arrayBuffer();
+  const data = new Uint8Array(arrayBuffer);
+
+  // Parse the OLE2 compound binary container
+  let cfbData: CFB.CFBContainer;
+  try {
+    cfbData = CFB.read(data, { type: 'array' });
+  } catch (e) {
+    console.error('Failed to parse PPT as OLE2 container:', e);
+    throw new Error(
+      `Could not parse ${file.name}. The file may be corrupted or not a valid PowerPoint file.`
+    );
+  }
+
+  // Find the "PowerPoint Document" stream inside the OLE2 container
+  const pptEntry = CFB.find(cfbData, '/PowerPoint Document');
+  if (!pptEntry || !pptEntry.content) {
+    throw new Error(
+      `Could not find presentation data in ${file.name}. The file may be corrupted.`
+    );
+  }
+
+  const streamData = pptEntry.content instanceof Uint8Array
+    ? pptEntry.content
+    : new Uint8Array(pptEntry.content as ArrayBuffer);
+  const texts: string[] = [];
+  let offset = 0;
+
+  // Scan through the PowerPoint Document stream for text records
+  // Record header format (8 bytes):
+  //   Bytes 0-1: recVer (4 bits) + recInstance (12 bits)
+  //   Bytes 2-3: recType (uint16 LE)
+  //   Bytes 4-7: recLen (uint32 LE)
+  while (offset + 8 <= streamData.length) {
+    const recVer = streamData[offset] & 0x0F;
+    const recType = streamData[offset + 2] | (streamData[offset + 3] << 8);
+    const recLen = (
+      streamData[offset + 4] |
+      (streamData[offset + 5] << 8) |
+      (streamData[offset + 6] << 16) |
+      (streamData[offset + 7] << 24)
+    ) >>> 0; // unsigned
+
+    offset += 8;
+
+    // Sanity check: if recLen exceeds remaining data or is unreasonably large, stop
+    if (recLen > streamData.length - offset || recLen > 10_000_000) {
+      break;
+    }
+
+    if (recType === 0x0FA8 && recLen > 0) {
+      // TextBytesAtom - ASCII/Latin1 encoded text
+      let text = '';
+      for (let i = 0; i < recLen; i++) {
+        const charCode = streamData[offset + i];
+        if (charCode === 0x0D) {
+          text += '\n';
+        } else if (charCode >= 0x20 || charCode === 0x09) {
+          text += String.fromCharCode(charCode);
+        }
+      }
+      const trimmed = text.trim();
+      if (trimmed.length > 1 && isReadableText(trimmed)) {
+        texts.push(trimmed);
+      }
+    } else if (recType === 0x0FA0 && recLen > 1) {
+      // TextCharsAtom - Unicode (UTF-16LE) text
+      let text = '';
+      for (let i = 0; i + 1 < recLen; i += 2) {
+        const charCode = streamData[offset + i] | (streamData[offset + i + 1] << 8);
+        if (charCode === 0x0D) {
+          text += '\n';
+        } else if (charCode >= 0x20 || charCode === 0x09) {
+          text += String.fromCharCode(charCode);
+        }
+      }
+      const trimmed = text.trim();
+      if (trimmed.length > 1 && isReadableText(trimmed)) {
+        texts.push(trimmed);
+      }
+    }
+
+    // Container records (recVer == 0xF) hold child records inline, so just continue.
+    // Atom records have data we need to skip past.
+    if (recVer !== 0x0F) {
+      offset += recLen;
+    }
+  }
+
+  if (texts.length === 0) {
+    throw new Error(
+      `No readable text found in ${file.name}. The presentation may contain only images or embedded objects. ` +
+      `Try exporting to PDF or PPTX from PowerPoint.`
+    );
+  }
+
+  console.log(`PPT extraction: found ${texts.length} text blocks from ${file.name}`);
+  return texts.join('\n\n');
+}
+
+// Extract text from PPTX (modern XML-based format)
+async function extractFromPPTX(file: File): Promise<string> {
   const arrayBuffer = await file.arrayBuffer();
 
   try {
@@ -357,16 +476,18 @@ export async function extractFileContent(
       case 'txt':
         text = await extractFromTXT(file);
         break;
-      case 'pptx':
       case 'ppt':
-        text = await extractFromPPT(file);
+        text = await extractFromPPTBinary(file);
+        break;
+      case 'pptx':
+        text = await extractFromPPTX(file);
         break;
       default:
         throw new Error(`Unsupported file format: ${extension}`);
     }
   } catch (error) {
     console.error(`Error extracting content from ${file.name}:`, error);
-    throw new Error(`Failed to extract content from ${file.name}`);
+    throw new Error(`Failed to extract content from ${file.name}: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   return {

@@ -37,7 +37,25 @@ export async function generateQuestionsWithGemini(
       }),
     });
 
-    const data = await response.json();
+    // Read response as text first to handle empty/non-JSON responses
+    const responseText = await response.text();
+
+    if (!responseText || responseText.trim().length === 0) {
+      throw new Error(
+        'The server returned an empty response. This usually means the API is unavailable. ' +
+        'Please ensure the app is deployed or running with "vercel dev".'
+      );
+    }
+
+    let data: any;
+    try {
+      data = JSON.parse(responseText);
+    } catch {
+      console.error('Failed to parse server response:', responseText.substring(0, 500));
+      throw new Error(
+        'The server returned an invalid response. The generation API may not be available.'
+      );
+    }
 
     if (!response.ok) {
       throw new Error(data.error || 'Failed to generate questions');
