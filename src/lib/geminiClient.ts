@@ -52,8 +52,14 @@ export async function generateQuestionsWithGemini(
       data = JSON.parse(responseText);
     } catch {
       console.error('Failed to parse server response:', responseText.substring(0, 500));
+      if (responseText.includes('<!DOCTYPE') || responseText.includes('<html')) {
+        throw new Error('The server returned an HTML error page instead of JSON. The API route may not be deployed correctly.');
+      }
+      if (response.status === 504) {
+        throw new Error('The server timed out. Try generating fewer questions (e.g. 10-20).');
+      }
       throw new Error(
-        'The server returned an invalid response. The generation API may not be available.'
+        `Server error (HTTP ${response.status}). The generation API may not be available. Check that OPENROUTER_API_KEY is set in Vercel environment variables.`
       );
     }
 
