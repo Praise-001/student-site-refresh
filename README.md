@@ -1,73 +1,97 @@
-# Welcome to your Lovable project
+# StudyWiz
 
-## Project info
+An AI-powered study tool that transforms your notes, slides, and documents into interactive practice quizzes. Upload your study materials and get instant, personalized questions to test your knowledge.
 
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
+## Features
 
-## How can I edit this code?
+- **AI Question Generation** — Upload PDFs, DOCX, PPTX, PPT, or TXT files and generate up to 100 practice questions per session using AI (powered by OpenRouter)
+- **Multiple Question Types** — Multiple choice, true/false, fill-in-the-blank, and short answer
+- **Adjustable Difficulty** — Choose between easy, medium, and hard question difficulty
+- **Practice Mode** — Answer questions one at a time with instant feedback, explanations, and score tracking
+- **Review Answers** — After completing a quiz, review all questions with your answers vs. correct answers
+- **Quiz History** — Track your scores, averages, and best results across all completed quizzes
+- **AI Chat** — Chat with an AI assistant about your uploaded study materials
+- **Math Rendering** — LaTeX math expressions render properly in questions and answers via KaTeX
+- **Dark Mode** — Dark theme enabled by default with light mode toggle
+- **File Format Support** — PDF, DOCX, PPTX, PPT (binary), TXT, and image-based files (OCR via Tesseract.js)
 
-There are several ways of editing your application.
+## Tech Stack
 
-**Use Lovable**
+- **Frontend** — React 18, TypeScript, Vite
+- **Styling** — Tailwind CSS, shadcn/ui, Radix UI
+- **AI Backend** — Vercel Serverless Functions, OpenRouter API
+- **File Parsing** — pdfjs-dist, Mammoth (DOCX), JSZip (PPTX), CFB (PPT), Tesseract.js (OCR)
+- **Math** — KaTeX / react-katex
+- **Deployment** — Vercel
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and start prompting.
+## Getting Started
 
-Changes made via Lovable will be committed automatically to this repo.
+### Prerequisites
 
-**Use your preferred IDE**
+- Node.js 18+
+- npm
+- An [OpenRouter](https://openrouter.ai/) API key
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+### Installation
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+```bash
+git clone https://github.com/Praise-001/student-site-refresh.git
+cd student-site-refresh
+npm install
+```
 
-Follow these steps:
+### Environment Setup
 
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
+Create a `.env` file in the project root:
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
+```env
+OPENROUTER_API_KEY=your_openrouter_api_key_here
+```
 
-# Step 3: Install the necessary dependencies.
-npm i
+### Development
 
-# Step 4: Start the development server with auto-reloading and an instant preview.
+```bash
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+The app runs at `http://localhost:8080`. A custom Vite plugin (`vite-api-plugin.ts`) serves the Vercel API routes locally during development, so question generation works without deploying.
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+### Production Build
 
-**Use GitHub Codespaces**
+```bash
+npm run build
+npm run preview
+```
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+### Deployment
 
-## What technologies are used for this project?
+Push to the `main` branch. Vercel auto-deploys from GitHub. Make sure `OPENROUTER_API_KEY` is set in your Vercel project environment variables.
 
-This project is built with:
+## Project Structure
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+```text
+├── api/
+│   ├── generate-questions.ts   # Question generation endpoint (OpenRouter)
+│   └── file-converter.ts       # File type detection endpoint
+├── src/
+│   ├── components/
+│   │   ├── GeneratorPanel.tsx   # Upload + settings + generate flow
+│   │   ├── PracticeView.tsx     # Quiz practice and results
+│   │   ├── HistoryView.tsx      # Quiz history with stats
+│   │   ├── ChatView.tsx         # AI chat assistant
+│   │   ├── FileUploadZone.tsx   # Drag-and-drop file upload
+│   │   ├── GeneratorSettings.tsx # Question count and difficulty
+│   │   └── QuestionTypeSelector.tsx # Question type picker
+│   ├── lib/
+│   │   ├── fileExtractor.ts     # Text extraction from all file formats
+│   │   ├── geminiClient.ts      # API client for question generation
+│   │   └── quizHistory.ts       # localStorage quiz history
+│   └── pages/
+│       └── Index.tsx            # Main page with tab navigation
+├── vite-api-plugin.ts           # Local dev server for API routes
+└── vite.config.ts
+```
 
-## How can I deploy this project?
+## License
 
-Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
-
-## Can I connect a custom domain to my Lovable project?
-
-Yes, you can!
-
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
-
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+MIT
