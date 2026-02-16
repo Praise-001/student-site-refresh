@@ -68,6 +68,9 @@ export function localApiPlugin(): Plugin {
             req.body = await parseJsonBody(req);
             const mod = await server.ssrLoadModule('/api/generate-questions.ts');
             await mod.default(req, res);
+          } else if (url.startsWith('/api/get-key')) {
+            const mod = await server.ssrLoadModule('/api/get-key.ts');
+            await mod.default(req, res);
           } else if (url.startsWith('/api/file-converter')) {
             // file-converter streams body via busboy — don't pre-parse
             const mod = await server.ssrLoadModule('/api/file-converter.ts');
