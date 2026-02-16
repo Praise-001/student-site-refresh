@@ -4,7 +4,6 @@ import { Button } from "@/components/ui/button";
 import { UploadCard } from "./UploadCard";
 import { QuestionTypeSelector } from "./QuestionTypeSelector";
 import { GeneratorSettings } from "./GeneratorSettings";
-import { getStoredApiKey, getFallbackApiKey } from "./ApiKeyModal";
 import { extractAllFilesContent } from "@/lib/fileExtractor";
 import { generateQuestionsWithGemini } from "@/lib/geminiClient";
 
@@ -86,46 +85,18 @@ export const GeneratorPanel = ({
 
       setGenerationProgress("Generating questions with AI...");
 
-      let questions: Question[];
-
-      // Try primary key first, then fallback
-      const apiKeys = [getStoredApiKey(), getFallbackApiKey()];
-      let lastError: any = null;
-
-      for (let i = 0; i < apiKeys.length; i++) {
-        try {
-          console.log(`Trying API key ${i + 1}...`);
-          questions = await generateQuestionsWithGemini(
-            extracted.combinedText,
-            apiKeys[i],
-            {
-              questionTypes: selectedTypes,
-              questionCount,
-              difficulty,
-              previousTopics: previousTopics.slice(-100),
-              previousQuestions: previousQuestions.slice(-100),
-            }
-          );
-          // If successful, break out of loop
-          break;
-        } catch (error: any) {
-          console.log(`API key ${i + 1} failed:`, error.message);
-          lastError = error;
-
-          // If it's not a quota/key error, don't try next key
-          if (!error.message?.includes("quota") &&
-              !error.message?.includes("API key") &&
-              !error.message?.includes("RESOURCE_EXHAUSTED") &&
-              !error.message?.includes("429")) {
-            throw error;
-          }
-
-          // If this was the last key, throw the error
-          if (i === apiKeys.length - 1) {
-            throw new Error("All API keys exhausted. Please try again later.");
-          }
-        }
-      }
+      const questions = await generateQuestionsWithGemini(
+        extracted.combinedText,
+        '', // API key is fetched server-side
+        {
+          questionTypes: selectedTypes,
+          questionCount,
+          difficulty,
+          previousTopics: previousTopics.slice(-100),
+          previousQuestions: previousQuestions.slice(-100),
+        },
+        (progress) => setGenerationProgress(progress)
+      );
 
       if (!questions || questions.length === 0) {
         throw new Error("No questions were generated. Please try again.");

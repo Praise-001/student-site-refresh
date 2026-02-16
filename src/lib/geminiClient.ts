@@ -1,4 +1,11 @@
-const MODEL = 'openrouter/free';
+// Fallback chain: if one model is rate-limited, try the next
+const MODELS = [
+  'openrouter/free',
+  'meta-llama/llama-3.1-8b-instruct:free',
+  'google/gemma-2-9b-it:free',
+  'qwen/qwen-2.5-7b-instruct:free',
+  'mistralai/mistral-7b-instruct:free',
+];
 
 interface GenerateConfig {
   questionTypes: string[];
@@ -50,11 +57,11 @@ RULES:
 1. Create exactly ${questionCount} questions. Each MUST test a DIFFERENT concept.
 2. Question types:\n${typeDistribution}
 3. Difficulty: ${difficulty}
-4. For multiple-choice: use 4 options and vary correct answer positions.
+4. For multiple-choice: use 4 options (without letter prefixes) and vary correct answer positions.
 5. Keep explanations brief (1 sentence).
 
 JSON FORMAT:
-{"questions":[{"id":"q1","type":"multiple-choice","question":"...","options":["A","B","C","D"],"correctAnswer":0,"explanation":"...","topic":"..."}]}
+{"questions":[{"id":"q1","type":"multiple-choice","question":"...","options":["option text","option text","option text","option text"],"correctAnswer":0,"explanation":"...","topic":"..."}]}
 
 Types: "multiple-choice" | "true-false" | "fill-blank" | "short-answer"
 correctAnswer: number (0-based index) for MC/TF, string for fill-blank/short-answer.`;
@@ -151,11 +158,98 @@ async function getApiKey(): Promise<string> {
   return cachedApiKey;
 }
 
-// --- Main generation function (calls OpenRouter directly from browser) ---
+// --- Call OpenRouter with automatic retry + model fallback ---
+async function callWithRetry(
+  apiKey: string,
+  messages: any[],
+  onStatus?: (msg: string) => void
+): Promise<string> {
+  const MAX_RETRIES = 3;
+  const BACKOFF = [5000, 10000, 20000]; // 5s, 10s, 20s
+
+  for (let modelIdx = 0; modelIdx < MODELS.length; modelIdx++) {
+    const model = MODELS[modelIdx];
+
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      try {
+        if (attempt > 0 || modelIdx > 0) {
+          const waitMs = BACKOFF[Math.min(attempt, BACKOFF.length - 1)];
+          const label = modelIdx > 0 ? `Trying model ${modelIdx + 1}/${MODELS.length}` : `Retry ${attempt + 1}`;
+          onStatus?.(`${label}, waiting ${waitMs / 1000}s...`);
+          console.log(`${label} (${model}), waiting ${waitMs / 1000}s...`);
+          await new Promise(r => setTimeout(r, waitMs));
+        }
+
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': window.location.origin,
+            'X-Title': 'StudyWiz'
+          },
+          body: JSON.stringify({
+            model,
+            messages,
+            temperature: 0.7,
+            max_tokens: 8192,
+            response_format: { type: 'json_object' },
+          })
+        });
+
+        if (response.status === 429) {
+          console.log(`Rate limited on ${model} (attempt ${attempt + 1})`);
+          // If last retry on this model, break to try next model
+          if (attempt === MAX_RETRIES - 1) break;
+          continue;
+        }
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          const msg = errorData.error?.message || response.statusText;
+          // Model not found or unavailable — skip to next model
+          if (response.status === 404 || msg.includes('No endpoints')) break;
+          throw new Error(`API error (${response.status}): ${msg}`);
+        }
+
+        const completion = await response.json();
+        if (completion.error) {
+          if (completion.error.message?.includes('rate') || completion.error.code === 429) {
+            if (attempt === MAX_RETRIES - 1) break;
+            continue;
+          }
+          throw new Error(completion.error.message || 'API returned an error');
+        }
+
+        const content = completion.choices?.[0]?.message?.content;
+        if (!content) {
+          console.log(`Empty response from ${model}, retrying...`);
+          continue;
+        }
+
+        console.log(`Success with ${completion.model || model} (${content.length} chars)`);
+        onStatus?.('Processing questions...');
+        return content;
+
+      } catch (error: any) {
+        // Non-retryable errors
+        if (!error.message?.includes('rate') && !error.message?.includes('429') && !error.message?.includes('empty')) {
+          throw error;
+        }
+        console.log(`Error on ${model} attempt ${attempt + 1}: ${error.message}`);
+      }
+    }
+  }
+
+  throw new Error('All models are currently busy. Please wait 30 seconds and try again.');
+}
+
+// --- Main generation function ---
 export async function generateQuestionsWithGemini(
   extractedText: string,
   _apiKey: string,
-  config: GenerateConfig
+  config: GenerateConfig,
+  onProgress?: (msg: string) => void
 ): Promise<Question[]> {
   if (extractedText.length < 100) {
     throw new Error('Not enough content to generate questions. Please upload more material.');
@@ -164,12 +258,10 @@ export async function generateQuestionsWithGemini(
   const apiKey = await getApiKey();
   const totalQuestions = config.questionCount;
 
-  // Condense text — scale budget with question count
   const maxTextChars = Math.min(12000, 3000 + totalQuestions * 200);
   const condensedText = condenseText(extractedText, maxTextChars);
   console.log(`Text: ${extractedText.length} -> ${condensedText.length} chars`);
 
-  // Call OpenRouter directly from the browser — no Vercel timeout!
   const MAX_PER_CALL = 50;
   const numBatches = Math.ceil(totalQuestions / MAX_PER_CALL);
   const allQuestions: any[] = [];
@@ -180,50 +272,22 @@ export async function generateQuestionsWithGemini(
       : MAX_PER_CALL;
 
     if (batchCount <= 0) continue;
-    if (batch > 0) await new Promise(r => setTimeout(r, 1500));
+    if (batch > 0) await new Promise(r => setTimeout(r, 2000));
 
     const previousQs = allQuestions.map((q: any) => q.question).filter(Boolean);
 
-    console.log(`Generating batch ${batch + 1}/${numBatches} (${batchCount} questions)...`);
+    onProgress?.(`Generating questions${numBatches > 1 ? ` (batch ${batch + 1}/${numBatches})` : ''}...`);
 
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': window.location.origin,
-        'X-Title': 'StudyWiz'
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        messages: [
-          { role: 'system', content: buildSystemPrompt(batchCount, config.questionTypes, config.difficulty) },
-          { role: 'user', content: buildUserPrompt(
-            condensedText,
-            batchCount,
-            [...(config.previousQuestions || []), ...previousQs]
-          )}
-        ],
-        temperature: 0.7,
-        max_tokens: 8192,
-        response_format: { type: 'json_object' },
-      })
-    });
+    const messages = [
+      { role: 'system', content: buildSystemPrompt(batchCount, config.questionTypes, config.difficulty) },
+      { role: 'user', content: buildUserPrompt(
+        condensedText,
+        batchCount,
+        [...(config.previousQuestions || []), ...previousQs]
+      )}
+    ];
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      const msg = errorData.error?.message || response.statusText;
-      if (response.status === 429) throw new Error('Rate limit exceeded. Please wait a moment and try again.');
-      throw new Error(`API error: ${msg}`);
-    }
-
-    const completion = await response.json();
-    if (completion.error) throw new Error(completion.error.message || 'API returned an error');
-
-    const content = completion.choices?.[0]?.message?.content;
-    if (!content) throw new Error('Empty response from model. Please try again.');
-
-    console.log(`Response received (${content.length} chars)`);
+    const content = await callWithRetry(apiKey, messages, onProgress);
 
     const parsed = tryRepairJSON(content);
     if (parsed.questions && Array.isArray(parsed.questions)) {
