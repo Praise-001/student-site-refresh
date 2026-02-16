@@ -82,30 +82,44 @@ Generate ${questionCount} unique questions from the material above. Each must te
 function tryRepairJSON(jsonString: string): any {
   try { return JSON.parse(jsonString); } catch {}
 
-  let repaired = jsonString.trim()
-    .replace(/^```json\s*/i, '').replace(/\s*```$/i, '')
-    .replace(/^```\s*/i, '').replace(/\s*```$/i, '');
+  let repaired = jsonString.trim();
 
+  // Strip markdown code fences (```json ... ``` or ``` ... ```)
+  repaired = repaired.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '');
   try { return JSON.parse(repaired); } catch {}
 
-  // Find the JSON object start
-  const start = repaired.indexOf('{"questions"');
-  if (start > 0) repaired = repaired.substring(start);
-  else {
-    const altStart = repaired.indexOf('{');
-    if (altStart > 0) repaired = repaired.substring(altStart);
+  // Extract JSON block from markdown if wrapped in text
+  const fenceMatch = jsonString.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenceMatch) {
+    try { return JSON.parse(fenceMatch[1]); } catch {}
+  }
+
+  // Find the JSON object that contains "questions"
+  const qStart = repaired.indexOf('{"questions"');
+  if (qStart >= 0) {
+    repaired = repaired.substring(qStart);
+  } else {
+    // Find first { character
+    const braceStart = repaired.indexOf('{');
+    if (braceStart >= 0) repaired = repaired.substring(braceStart);
+  }
+
+  // Trim any trailing text after the JSON
+  const lastBrace = repaired.lastIndexOf('}');
+  if (lastBrace >= 0 && lastBrace < repaired.length - 1) {
+    repaired = repaired.substring(0, lastBrace + 1);
   }
 
   try { return JSON.parse(repaired); } catch {}
 
-  // Try to truncate at last complete question and close
+  // Try to truncate at last complete question object and close
   const lastComplete = repaired.lastIndexOf('},');
   if (lastComplete > 0) {
-    repaired = repaired.substring(0, lastComplete + 1) + ']}';
-    try { return JSON.parse(repaired); } catch {}
+    const truncated = repaired.substring(0, lastComplete + 1) + ']}';
+    try { return JSON.parse(truncated); } catch {}
   }
 
-  // Brute force close brackets
+  // Brute force: close unclosed brackets/braces
   let braces = 0, brackets = 0, inStr = false, esc = false;
   for (const c of repaired) {
     if (esc) { esc = false; continue; }
@@ -121,6 +135,7 @@ function tryRepairJSON(jsonString: string): any {
 
   try { return JSON.parse(repaired); } catch (e) {
     console.error('JSON repair failed. First 500 chars:', repaired.substring(0, 500));
+    console.error('Last 200 chars:', repaired.substring(repaired.length - 200));
     throw new Error('Failed to parse AI response as JSON');
   }
 }
@@ -200,7 +215,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             )}
           ],
           temperature: 0.7,
-          max_tokens: 8192
+          max_tokens: 8192,
+          response_format: { type: 'json_object' },
+          provider: { require_parameters: false }
         })
       });
 
