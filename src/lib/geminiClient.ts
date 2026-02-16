@@ -251,7 +251,9 @@ export async function generateQuestionsWithGemini(
   // Shuffle MC options and normalize
   return uniqueQuestions.map((q: any, i: number) => {
     const type = q.type || 'multiple-choice';
-    let options = Array.isArray(q.options) ? q.options : [];
+    let options = Array.isArray(q.options)
+      ? q.options.map((o: string) => String(o).replace(/^[A-Da-d][.)]\s*/, '').trim())
+      : [];
     let correctAnswer = q.correctAnswer ?? 0;
 
     if (type === 'multiple-choice' && options.length >= 2 && typeof correctAnswer === 'number') {
