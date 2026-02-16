@@ -1,6 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-// Use OpenRouter's free auto-router — it picks the best available free model automatically
 const MODEL = 'openrouter/free';
 
 interface GenerateRequest {
@@ -24,179 +23,109 @@ interface Question {
   topic?: string;
 }
 
-// Maximum questions per batch (larger = fewer API calls = faster)
-const BATCH_SIZE = 35;
+// Smart text condensing: keep the most useful content within a char budget
+function condenseText(text: string, maxChars: number): string {
+  // Strip excessive whitespace and empty lines
+  let cleaned = text
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/^[ \t]+/gm, '')
+    .trim();
 
-function buildSystemPrompt(batchCount: number, questionTypes: string[], difficulty: string): string {
+  if (cleaned.length <= maxChars) return cleaned;
+
+  // For large texts, take beginning, middle, and end sections evenly
+  const third = Math.floor(maxChars / 3);
+  const start = cleaned.slice(0, third);
+  const midPoint = Math.floor(cleaned.length / 2);
+  const middle = cleaned.slice(midPoint - Math.floor(third / 2), midPoint + Math.floor(third / 2));
+  const end = cleaned.slice(-third);
+
+  return `${start}\n\n[...]\n\n${middle}\n\n[...]\n\n${end}`;
+}
+
+function buildSystemPrompt(questionCount: number, questionTypes: string[], difficulty: string): string {
   const typeDistribution = questionTypes.map(type => {
-    const count = Math.ceil(batchCount / questionTypes.length);
+    const count = Math.ceil(questionCount / questionTypes.length);
     return `- ${type}: approximately ${count} questions`;
   }).join('\n');
 
-  return `You are an expert exam creator that outputs ONLY valid JSON.
-
-CRITICAL: Your response must be ONLY a JSON object. No markdown, no \`\`\`, no explanations, no text before or after. Start directly with { and end with }.
+  return `You are an expert exam creator. Output ONLY valid JSON — no markdown, no backticks, no extra text.
 
 RULES:
-1. Output ONLY valid JSON - nothing else.
-2. Create exactly ${batchCount} unique questions.
-3. CRITICAL: Each question MUST test a completely DIFFERENT concept, fact, or idea. NEVER ask the same thing in different wording.
-4. Question Types:
-${typeDistribution}
-5. Difficulty: ${difficulty}
-6. For multiple-choice: Vary correct answer positions.
-7. NO two questions should be about the same topic or testable concept.
+1. Create exactly ${questionCount} questions. Each MUST test a DIFFERENT concept.
+2. Question types:\n${typeDistribution}
+3. Difficulty: ${difficulty}
+4. For multiple-choice: use 4 options and vary correct answer positions.
+5. Keep explanations brief (1 sentence).
 
-REQUIRED JSON FORMAT (output EXACTLY this structure):
-{
-  "questions": [
-    {
-      "id": "q1",
-      "type": "multiple-choice" | "true-false" | "fill-blank" | "short-answer",
-      "question": "string",
-      "options": ["string"] (4 options for MC, ["True", "False"] for TF, [] for others),
-      "correctAnswer": number (0-based index for MC/TF) or "string" (for fill-blank/short-answer),
-      "explanation": "string",
-      "topic": "string"
-    }
-  ]
-}`;
+JSON FORMAT:
+{"questions":[{"id":"q1","type":"multiple-choice","question":"...","options":["A","B","C","D"],"correctAnswer":0,"explanation":"...","topic":"..."}]}
+
+Types: "multiple-choice" | "true-false" | "fill-blank" | "short-answer"
+correctAnswer: number (0-based index) for MC/TF, string for fill-blank/short-answer.`;
 }
 
 function buildUserPrompt(
   content: string,
-  batchCount: number,
-  previousTopics?: string[],
-  previousQuestions?: string[],
-  batchNumber?: number
+  questionCount: number,
+  previousQuestions?: string[]
 ): string {
-  const avoidSection = [];
-  if (previousTopics?.length) {
-    avoidSection.push(`Avoid these topics: ${previousTopics.slice(-50).join(', ')}`);
-  }
-  if (previousQuestions?.length) {
-    avoidSection.push(`DO NOT repeat or rephrase these questions:\n${previousQuestions.slice(-50).join('\n')}`);
-  }
+  const avoidSection = previousQuestions?.length
+    ? `\nDO NOT repeat these questions:\n${previousQuestions.slice(-30).join('\n')}\n`
+    : '';
 
-  const batchInfo = batchNumber ? `(Batch ${batchNumber}) ` : '';
-
-  return `STUDY MATERIAL:
-"""
-${content.slice(0, 25000)}
-"""
-
-${avoidSection.length > 0 ? avoidSection.join('\n\n') : ''}
-
-${batchInfo}Generate ${batchCount} unique questions based STRICTLY on the text above.
-- Only ask about information explicitly stated in the material
-- Cover content from beginning, middle, and end of the material
-- Each question must be directly answerable from the text
-- Do NOT repeat any previously generated questions`;
+  return `STUDY MATERIAL:\n"""\n${content}\n"""\n${avoidSection}
+Generate ${questionCount} unique questions from the material above. Each must test a different concept.`;
 }
 
-// Try to extract and repair JSON from response
 function tryRepairJSON(jsonString: string): any {
-  // First try parsing as-is
-  try {
-    return JSON.parse(jsonString);
-  } catch (e) {
-    // Try to fix common issues
-  }
+  try { return JSON.parse(jsonString); } catch {}
 
-  let repaired = jsonString.trim();
+  let repaired = jsonString.trim()
+    .replace(/^```json\s*/i, '').replace(/\s*```$/i, '')
+    .replace(/^```\s*/i, '').replace(/\s*```$/i, '');
 
-  // Remove markdown code blocks if present (various formats)
-  repaired = repaired.replace(/^```json\s*/i, '').replace(/\s*```$/i, '');
-  repaired = repaired.replace(/^```\s*/i, '').replace(/\s*```$/i, '');
+  try { return JSON.parse(repaired); } catch {}
 
-  // Try parsing again after markdown cleanup
-  try {
-    return JSON.parse(repaired);
-  } catch (e) {
-    // Continue with repairs
-  }
-
-  // Try to find JSON object in the response (model might have added text before/after)
-  const jsonStartIndex = repaired.indexOf('{"questions"');
-  if (jsonStartIndex === -1) {
-    // Try alternate format
+  // Find the JSON object start
+  const start = repaired.indexOf('{"questions"');
+  if (start > 0) repaired = repaired.substring(start);
+  else {
     const altStart = repaired.indexOf('{');
-    if (altStart !== -1) {
-      repaired = repaired.substring(altStart);
-    }
-  } else {
-    repaired = repaired.substring(jsonStartIndex);
+    if (altStart > 0) repaired = repaired.substring(altStart);
   }
 
-  // Try parsing after extracting JSON start
-  try {
-    return JSON.parse(repaired);
-  } catch (e) {
-    // Continue with repairs
+  try { return JSON.parse(repaired); } catch {}
+
+  // Try to truncate at last complete question and close
+  const lastComplete = repaired.lastIndexOf('},');
+  if (lastComplete > 0) {
+    repaired = repaired.substring(0, lastComplete + 1) + ']}';
+    try { return JSON.parse(repaired); } catch {}
   }
 
-  // If truncated, try to close the JSON properly
-  // Count open braces/brackets
-  let braceCount = 0;
-  let bracketCount = 0;
-  let inString = false;
-  let escaped = false;
-
-  for (const char of repaired) {
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (char === '\\') {
-      escaped = true;
-      continue;
-    }
-    if (char === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) continue;
-
-    if (char === '{') braceCount++;
-    if (char === '}') braceCount--;
-    if (char === '[') bracketCount++;
-    if (char === ']') bracketCount--;
+  // Brute force close brackets
+  let braces = 0, brackets = 0, inStr = false, esc = false;
+  for (const c of repaired) {
+    if (esc) { esc = false; continue; }
+    if (c === '\\') { esc = true; continue; }
+    if (c === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (c === '{') braces++; if (c === '}') braces--;
+    if (c === '[') brackets++; if (c === ']') brackets--;
   }
+  if (inStr) repaired += '"';
+  while (brackets > 0) { repaired += ']'; brackets--; }
+  while (braces > 0) { repaired += '}'; braces--; }
 
-  // If we're in the middle of a string, close it
-  if (inString) {
-    repaired += '"';
-  }
-
-  // Try to find the last complete question and truncate there
-  const lastCompleteQuestion = repaired.lastIndexOf('},');
-  if (lastCompleteQuestion > 0 && (braceCount > 0 || bracketCount > 0)) {
-    repaired = repaired.substring(0, lastCompleteQuestion + 1);
-    // Close the array and object
-    repaired += ']}';
-  } else {
-    // Just close remaining brackets/braces
-    while (bracketCount > 0) {
-      repaired += ']';
-      bracketCount--;
-    }
-    while (braceCount > 0) {
-      repaired += '}';
-      braceCount--;
-    }
-  }
-
-  try {
-    return JSON.parse(repaired);
-  } catch (e) {
-    // Log the problematic content for debugging
-    console.error('Failed to parse JSON. First 500 chars:', repaired.substring(0, 500));
-    throw new Error('Failed to parse AI response as JSON. The model may have returned invalid format.');
+  try { return JSON.parse(repaired); } catch (e) {
+    console.error('JSON repair failed. First 500 chars:', repaired.substring(0, 500));
+    throw new Error('Failed to parse AI response as JSON');
   }
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // CORS Headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -210,24 +139,48 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!extractedText || !config) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
-
     if (extractedText.length < 50) {
       return res.status(400).json({ error: 'Extracted text is too short. Please upload more content.' });
     }
 
-    // Get API key from environment variable
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
       return res.status(500).json({ error: 'Server configuration error: API key not set' });
     }
 
-    // Helper function to call OpenRouter API for a batch
-    async function callOpenRouterBatch(
-      model: string,
-      batchCount: number,
-      previousQs: string[],
-      batchNumber: number
-    ): Promise<{ questions: any[]; model: string }> {
+    const totalQuestions = config.questionCount;
+
+    // Adapt text size to question count — less text for fewer questions, faster response
+    // Free models are slow on large inputs, so keep it tight
+    const maxTextChars = Math.min(12000, 3000 + totalQuestions * 200);
+    const condensedText = condenseText(extractedText, maxTextChars);
+
+    console.log(`Text: ${extractedText.length} -> ${condensedText.length} chars (budget: ${maxTextChars})`);
+
+    // Single API call for up to 50 questions (the sweet spot for free models)
+    // Only split into batches if requesting more than 50
+    const MAX_PER_CALL = 50;
+    const numBatches = Math.ceil(totalQuestions / MAX_PER_CALL);
+    const allQuestions: any[] = [];
+    let usedModel = '';
+
+    for (let batch = 0; batch < numBatches; batch++) {
+      const batchCount = batch === numBatches - 1
+        ? totalQuestions - (batch * MAX_PER_CALL)
+        : MAX_PER_CALL;
+
+      if (batchCount <= 0) continue;
+
+      // Only delay between batches (not before the first)
+      if (batch > 0) {
+        await new Promise(r => setTimeout(r, 1500));
+      }
+
+      const previousQs = allQuestions.map((q: any) => q.question).filter(Boolean);
+
+      // Single attempt with no retry — retries waste the 60s budget
+      console.log(`Batch ${batch + 1}/${numBatches}: generating ${batchCount} questions...`);
+
       const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -237,180 +190,102 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           'X-Title': 'StudyWiz'
         },
         body: JSON.stringify({
-          model,
+          model: MODEL,
           messages: [
             { role: 'system', content: buildSystemPrompt(batchCount, config.questionTypes, config.difficulty) },
             { role: 'user', content: buildUserPrompt(
-              extractedText,
+              condensedText,
               batchCount,
-              config.previousTopics,
-              [...(config.previousQuestions || []), ...previousQs],
-              batchNumber
+              [...(config.previousQuestions || []), ...previousQs]
             )}
           ],
-          temperature: 0.6,
+          temperature: 0.7,
           max_tokens: 8192
         })
       });
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw { status: response.status, message: errorData.error?.message || response.statusText };
+        const msg = errorData.error?.message || response.statusText;
+        console.error(`API error (${response.status}):`, msg);
+        throw { status: response.status, message: msg };
       }
 
       const completion = await response.json();
 
-      // Check for API errors
       if (completion.error) {
-        console.error('OpenRouter API error:', completion.error);
+        console.error('OpenRouter error:', completion.error);
         throw new Error(completion.error.message || 'API returned an error');
       }
 
       const content = completion.choices?.[0]?.message?.content;
       if (!content) {
-        console.error('Empty or missing content in response:', JSON.stringify(completion).substring(0, 500));
+        console.error('Empty response:', JSON.stringify(completion).substring(0, 300));
         throw new Error('Empty response from model');
       }
 
-      console.log('Raw response (first 300 chars):', content.substring(0, 300));
+      usedModel = completion.model || MODEL;
+      console.log(`Response from ${usedModel} (${content.length} chars)`);
 
-      // Parse with repair capability
       const parsed = tryRepairJSON(content);
-      if (!parsed.questions || !Array.isArray(parsed.questions)) {
-        console.error('Invalid structure after parsing:', JSON.stringify(parsed).substring(0, 500));
-        throw new Error('Invalid response structure - no questions array');
+      if (parsed.questions && Array.isArray(parsed.questions)) {
+        allQuestions.push(...parsed.questions);
+        console.log(`Batch ${batch + 1} complete: ${parsed.questions.length} questions`);
       }
-
-      return { questions: parsed.questions, model };
     }
-
-    // Generate questions in sequential batches with delays to respect rate limits
-    const totalQuestions = config.questionCount;
-    const numBatches = Math.ceil(totalQuestions / BATCH_SIZE);
-    let usedModel = '';
-    const allQuestions: any[] = [];
-
-    console.log(`Generating ${totalQuestions} questions in ${numBatches} sequential batches of up to ${BATCH_SIZE}`);
-
-    // Helper: wait with exponential backoff on rate limit
-    const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-    async function runBatchWithRetry(batch: number, batchCount: number, previousQs: string[]): Promise<any[]> {
-      const maxRetries = 2;
-      for (let attempt = 0; attempt <= maxRetries; attempt++) {
-        try {
-          console.log(`Batch ${batch + 1}/${numBatches}: attempt ${attempt + 1} (avoiding ${previousQs.length} previous questions)...`);
-          const result = await callOpenRouterBatch(MODEL, batchCount, previousQs, batch + 1);
-          usedModel = result.model;
-          console.log(`Batch ${batch + 1} complete with ${result.questions.length} questions`);
-          return result.questions;
-        } catch (error: any) {
-          console.log(`Batch ${batch + 1} attempt ${attempt + 1} failed: ${error.message}`);
-          if (attempt < maxRetries) {
-            await delay(3000);
-          }
-        }
-      }
-      console.error(`Batch ${batch + 1} failed after all retries`);
-      return [];
-    }
-
-    for (let batch = 0; batch < numBatches; batch++) {
-      const batchCount = batch === numBatches - 1
-        ? totalQuestions - (batch * BATCH_SIZE)
-        : BATCH_SIZE;
-
-      if (batchCount <= 0) continue;
-
-      // Add delay between batches to avoid rate limits
-      if (batch > 0) {
-        console.log('Waiting 3s between batches...');
-        await delay(3000);
-      }
-
-      // Pass previously generated question texts so the AI avoids repeating them
-      const previousQsForBatch = allQuestions.map((q: any) => q.question).filter(Boolean);
-      const questions = await runBatchWithRetry(batch, batchCount, previousQsForBatch);
-      allQuestions.push(...questions);
-    }
-
-    console.log(`All batches complete. Total questions: ${allQuestions.length}`);
 
     if (allQuestions.length === 0) {
-      throw new Error('No questions were generated. The AI models may be unavailable.');
+      throw new Error('No questions were generated. The AI model may be unavailable. Please try again.');
     }
 
-    // Shuffle array helper using Fisher-Yates algorithm
-    function shuffleWithIndex<T>(array: T[]): { shuffled: T[]; originalIndices: number[] } {
-      const indices = array.map((_, i) => i);
-      const shuffled = [...array];
-
-      for (let i = shuffled.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-        [indices[i], indices[j]] = [indices[j], indices[i]];
-      }
-
-      return { shuffled, originalIndices: indices };
-    }
-
-    // Deduplicate questions using multiple strategies
-    function normalizeQuestion(text: string): string {
+    // --- Deduplication ---
+    function normalizeQ(text: string): string {
       return text.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
     }
-
     function getKeyWords(text: string): string[] {
-      const stopWords = new Set(['the', 'is', 'are', 'was', 'were', 'what', 'which', 'how', 'does', 'did', 'can', 'will', 'would', 'should', 'could', 'has', 'have', 'had', 'been', 'being', 'this', 'that', 'these', 'those', 'with', 'from', 'for', 'and', 'but', 'not', 'you', 'your', 'its', 'his', 'her', 'their', 'our', 'about', 'into', 'over', 'after', 'before', 'between', 'under', 'above', 'below', 'following', 'true', 'false']);
-      return normalizeQuestion(text)
-        .split(' ')
-        .filter(w => w.length > 2 && !stopWords.has(w));
+      const stop = new Set(['the','is','are','was','were','what','which','how','does','did','can','will','would','should','could','has','have','had','been','being','this','that','these','those','with','from','for','and','but','not','you','your','its','about','into','over','after','before','between','following','true','false']);
+      return normalizeQ(text).split(' ').filter(w => w.length > 2 && !stop.has(w));
+    }
+    function isTooSimilar(a: string, b: string): boolean {
+      const w1 = getKeyWords(a), w2 = getKeyWords(b);
+      if (!w1.length || !w2.length) return false;
+      const s2 = new Set(w2);
+      const overlap = w1.filter(w => s2.has(w)).length;
+      return (overlap / Math.max(w1.length, w2.length)) >= 0.7;
     }
 
-    function isTooSimilar(q1: string, q2: string): boolean {
-      const words1 = getKeyWords(q1);
-      const words2 = getKeyWords(q2);
-      if (words1.length === 0 || words2.length === 0) return false;
-      const set2 = new Set(words2);
-      const overlap = words1.filter(w => set2.has(w)).length;
-      const similarity = overlap / Math.max(words1.length, words2.length);
-      return similarity >= 0.7;
-    }
-
-    const seenNormalized = new Set<string>();
-    const acceptedQuestions: any[] = [];
+    const seen = new Set<string>();
+    const accepted: any[] = [];
     const uniqueQuestions = allQuestions.filter((q: any) => {
       const text = q.question || '';
-      const normalized = normalizeQuestion(text).replace(/\s/g, '').slice(0, 120);
-      if (!normalized || seenNormalized.has(normalized)) return false;
-
-      // Check similarity against all already-accepted questions
-      for (const accepted of acceptedQuestions) {
-        if (isTooSimilar(text, accepted.question)) return false;
-      }
-
-      seenNormalized.add(normalized);
-      acceptedQuestions.push(q);
+      const norm = normalizeQ(text).replace(/\s/g, '').slice(0, 120);
+      if (!norm || seen.has(norm)) return false;
+      for (const a of accepted) { if (isTooSimilar(text, a.question)) return false; }
+      seen.add(norm);
+      accepted.push(q);
       return true;
     });
 
-    console.log(`Deduplication: ${allQuestions.length} -> ${uniqueQuestions.length} unique questions`);
+    console.log(`Dedup: ${allQuestions.length} -> ${uniqueQuestions.length}`);
 
-    // Normalize and shuffle options for multiple-choice questions
-    const questions: Question[] = uniqueQuestions.map((q: any, index: number) => {
+    // --- Shuffle MC options ---
+    const questions: Question[] = uniqueQuestions.map((q: any, i: number) => {
       const type = q.type || 'multiple-choice';
       let options = Array.isArray(q.options) ? q.options : [];
       let correctAnswer = q.correctAnswer ?? 0;
 
-      // Shuffle options for multiple-choice questions (not true-false)
       if (type === 'multiple-choice' && options.length >= 2 && typeof correctAnswer === 'number') {
-        const { shuffled, originalIndices } = shuffleWithIndex(options);
-        options = shuffled;
-        // Find where the original correct answer ended up
-        correctAnswer = originalIndices.indexOf(q.correctAnswer);
+        const indices = options.map((_: any, idx: number) => idx);
+        for (let j = options.length - 1; j > 0; j--) {
+          const k = Math.floor(Math.random() * (j + 1));
+          [options[j], options[k]] = [options[k], options[j]];
+          [indices[j], indices[k]] = [indices[k], indices[j]];
+        }
+        correctAnswer = indices.indexOf(q.correctAnswer);
       }
 
       return {
-        id: `q${Date.now()}_${index}`,
+        id: `q${Date.now()}_${i}`,
         type,
         question: q.question || '',
         options,
@@ -422,33 +297,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     return res.status(200).json({
       questions,
-      metadata: {
-        generatedCount: questions.length,
-        model: usedModel
-      }
+      metadata: { generatedCount: questions.length, model: usedModel }
     });
 
   } catch (error: any) {
-    console.error('OpenRouter Generation Error:', error);
+    console.error('Generation error:', error);
 
-    if (error.status === 401 || error.message?.includes('API key') || error.message?.includes('authentication')) {
+    if (error.status === 401 || error.message?.includes('API key')) {
       return res.status(401).json({ error: 'Invalid API Key. Please check server configuration.' });
     }
-
     if (error.status === 413 || error.message?.includes('too long')) {
-      return res.status(413).json({ error: 'Text too long for this model. Try uploading a smaller document.' });
+      return res.status(413).json({ error: 'Text too long. Try a smaller document or fewer questions.' });
     }
-
     if (error.message?.includes('rate') || error.message?.includes('limit')) {
-      return res.status(429).json({ error: 'Rate limit exceeded. Please try again in a moment.' });
+      return res.status(429).json({ error: 'Rate limit exceeded. Please wait a moment and try again.' });
     }
-
-    // Include more detail for debugging
-    const errorMsg = error.message || 'Failed to generate questions';
-    console.error('Final error:', errorMsg);
 
     return res.status(500).json({
-      error: `${errorMsg}. Please try again or try with fewer questions.`
+      error: `${error.message || 'Failed to generate questions'}. Please try again.`
     });
   }
 }

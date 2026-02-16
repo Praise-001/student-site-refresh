@@ -26,14 +26,14 @@ export const GeneratorSettings = ({
         <Slider
           value={[questionCount]}
           onValueChange={(value) => onQuestionCountChange(value[0])}
-          min={10}
-          max={100}
-          step={10}
+          min={5}
+          max={50}
+          step={5}
           className="w-full"
         />
         <div className="flex justify-between text-xs text-muted-foreground">
-          <span>10</span>
-          <span>100</span>
+          <span>5</span>
+          <span>50</span>
         </div>
       </div>
 

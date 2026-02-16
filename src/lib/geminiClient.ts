@@ -25,25 +25,23 @@ export async function generateQuestionsWithGemini(
     throw new Error('Not enough content to generate questions. Please upload more material.');
   }
 
+  // 65s timeout — slightly above Vercel's 60s function limit
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 65000);
+
   try {
     const response = await fetch('/api/generate-questions', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        extractedText,
-        config,
-      }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ extractedText, config }),
+      signal: controller.signal,
     });
 
-    // Read response as text first to handle empty/non-JSON responses
     const responseText = await response.text();
 
     if (!responseText || responseText.trim().length === 0) {
       throw new Error(
-        'The server returned an empty response. This usually means the API is unavailable. ' +
-        'Please ensure the app is deployed or running with "vercel dev".'
+        'The server returned an empty response. Please ensure the app is deployed correctly.'
       );
     }
 
@@ -51,15 +49,15 @@ export async function generateQuestionsWithGemini(
     try {
       data = JSON.parse(responseText);
     } catch {
-      console.error('Failed to parse server response:', responseText.substring(0, 500));
+      console.error('Failed to parse response:', responseText.substring(0, 500));
       if (responseText.includes('<!DOCTYPE') || responseText.includes('<html')) {
-        throw new Error('The server returned an HTML error page instead of JSON. The API route may not be deployed correctly.');
+        throw new Error('The API route may not be deployed correctly. Check Vercel deployment.');
       }
       if (response.status === 504) {
-        throw new Error('The server timed out. Try generating fewer questions (e.g. 10-20).');
+        throw new Error('The server timed out. Try generating fewer questions.');
       }
       throw new Error(
-        `Server error (HTTP ${response.status}). The generation API may not be available. Check that OPENROUTER_API_KEY is set in Vercel environment variables.`
+        `Server error (HTTP ${response.status}). Check that OPENROUTER_API_KEY is set in Vercel environment variables.`
       );
     }
 
@@ -73,7 +71,12 @@ export async function generateQuestionsWithGemini(
 
     return data.questions;
   } catch (error: any) {
+    if (error.name === 'AbortError') {
+      throw new Error('Request timed out. Try generating fewer questions (e.g. 10-20).');
+    }
     console.error('Question generation error:', error);
     throw new Error(error.message || 'Failed to generate questions. Please try again.');
+  } finally {
+    clearTimeout(timeout);
   }
 }
