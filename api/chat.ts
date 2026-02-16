@@ -1,20 +1,14 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-// Available free models on OpenRouter (verified working)
+// Fallback chain — verified available free models (Feb 2026)
 const MODELS = [
-  'qwen/qwen-2.5-72b-instruct:free',
-  'meta-llama/llama-3.2-3b-instruct:free'
+  'openrouter/free',
+  'meta-llama/llama-3.3-70b-instruct:free',
+  'mistralai/mistral-small-3.1-24b-instruct:free',
+  'google/gemma-3-27b-it:free',
+  'nousresearch/hermes-3-llama-3.1-405b:free',
+  'qwen/qwen3-next-80b-a3b-instruct:free',
 ];
-
-// Pick a random model
-function getRandomModel(): string {
-  return MODELS[Math.floor(Math.random() * MODELS.length)];
-}
-
-// Get fallback model (the other one)
-function getFallbackModel(currentModel: string): string {
-  return MODELS.find(m => m !== currentModel) || MODELS[0];
-}
 
 interface ChatRequest {
   message: string;
@@ -85,52 +79,72 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Add current message
     messages.push({ role: 'user', content: message });
 
-    // Helper function to call OpenRouter API
-    async function callOpenRouter(model: string): Promise<{ content: string; model: string }> {
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-          'HTTP-Referer': 'https://studywiz.app',
-          'X-Title': 'StudyWiz'
-        },
-        body: JSON.stringify({
-          model,
-          messages,
-          temperature: 0.7,
-          max_tokens: 4096
-        })
-      });
+    // Try models in order until one works
+    let responseText = '';
+    let usedModel = '';
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw { status: response.status, message: errorData.error?.message || response.statusText };
-      }
+    for (let i = 0; i < MODELS.length; i++) {
+      const model = MODELS[i];
+      try {
+        if (i > 0) console.log(`Trying fallback model ${i + 1}/${MODELS.length}: ${model}`);
 
-      const completion = await response.json();
-      const content = completion.choices[0]?.message?.content;
-      if (!content) {
-        throw new Error('Empty response from model');
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://studywiz.app',
+            'X-Title': 'StudyWiz'
+          },
+          body: JSON.stringify({
+            model,
+            messages,
+            temperature: 0.7,
+            max_tokens: 4096
+          })
+        });
+
+        if (response.status === 429) {
+          console.log(`Rate limited on ${model}, trying next...`);
+          continue;
+        }
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          const msg = errorData.error?.message || response.statusText;
+          if (response.status === 404 || msg.includes('No endpoints')) {
+            console.log(`Model ${model} not available, trying next...`);
+            continue;
+          }
+          throw { status: response.status, message: msg };
+        }
+
+        const completion = await response.json();
+        if (completion.error) {
+          if (completion.error.message?.includes('rate') || completion.error.code === 429) {
+            continue;
+          }
+          throw new Error(completion.error.message || 'API returned an error');
+        }
+
+        const content = completion.choices?.[0]?.message?.content;
+        if (!content) {
+          console.log(`Empty response from ${model}, trying next...`);
+          continue;
+        }
+
+        responseText = content;
+        usedModel = completion.model || model;
+        break;
+      } catch (error: any) {
+        if (error.status) throw error; // non-retryable
+        console.log(`Error on ${model}: ${error.message}`);
+        if (i === MODELS.length - 1) throw error;
       }
-      return { content, model };
     }
 
-    // Try primary model, fallback to secondary if it fails
-    const primaryModel = getRandomModel();
-    let responseText: string;
-    let usedModel: string;
-
-    try {
-      const result = await callOpenRouter(primaryModel);
-      responseText = result.content;
-      usedModel = result.model;
-    } catch (primaryError: any) {
-      console.log(`Primary model ${primaryModel} failed, trying fallback...`);
-      const fallbackModel = getFallbackModel(primaryModel);
-      const result = await callOpenRouter(fallbackModel);
-      responseText = result.content;
-      usedModel = result.model;
+    if (!responseText) {
+      throw new Error('All models are currently busy. Please try again in a moment.');
     }
 
     return res.status(200).json({
