@@ -1,10 +1,12 @@
 // Fallback chain: if one model is rate-limited, try the next
+// Updated Feb 2026 — only models verified available on OpenRouter
 const MODELS = [
-  'openrouter/free',
-  'meta-llama/llama-3.1-8b-instruct:free',
-  'google/gemma-2-9b-it:free',
-  'qwen/qwen-2.5-7b-instruct:free',
-  'mistralai/mistral-7b-instruct:free',
+  'openrouter/free',                                    // Smart router — auto-picks best available free model
+  'meta-llama/llama-3.3-70b-instruct:free',             // Llama 3.3 70B
+  'mistralai/mistral-small-3.1-24b-instruct:free',      // Mistral Small 3.1 24B
+  'google/gemma-3-27b-it:free',                         // Gemma 3 27B
+  'nousresearch/hermes-3-llama-3.1-405b:free',          // Hermes 3 405B
+  'qwen/qwen3-next-80b-a3b-instruct:free',              // Qwen3 80B
 ];
 
 interface GenerateConfig {

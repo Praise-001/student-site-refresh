@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-const MODEL = 'openrouter/free';
+const MODEL = 'meta-llama/llama-3.3-70b-instruct:free';
 
 interface GenerateRequest {
   extractedText: string;
