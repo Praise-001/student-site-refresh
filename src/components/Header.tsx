@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { BookOpen, MessageCircle, History, Settings, Sun, Moon, LogOut, User } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
@@ -10,7 +11,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu";
-import { useTheme } from "next-themes";
 
 type Tab = "generate" | "practice" | "chat" | "history";
 
@@ -27,8 +27,18 @@ const tabs = [
 ];
 
 export const Header = ({ activeTab, onTabChange }: HeaderProps) => {
-  const { theme, setTheme } = useTheme();
   const { user, username, signOut } = useAuth();
+
+  const [isDark, setIsDark] = useState(() => {
+    return document.documentElement.classList.contains("dark");
+  });
+
+  const toggleTheme = () => {
+    const next = !isDark;
+    setIsDark(next);
+    document.documentElement.classList.toggle("dark", next);
+    localStorage.setItem("studywiz_theme", next ? "dark" : "light");
+  };
 
   return (
     <header className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/80 backdrop-blur-xl">
@@ -77,10 +87,10 @@ export const Header = ({ activeTab, onTabChange }: HeaderProps) => {
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
               <DropdownMenuItem
-                onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+                onClick={toggleTheme}
                 className="flex items-center gap-2 cursor-pointer"
               >
-                {theme === "dark" ? (
+                {isDark ? (
                   <>
                     <Sun className="w-4 h-4" />
                     <span>Light Mode</span>

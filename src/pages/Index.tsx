@@ -50,9 +50,14 @@ const Index = () => {
     setExtractedContent(content);
   };
 
-  // Set dark mode by default for the sleek look
+  // Apply saved theme preference (default to dark)
   useEffect(() => {
-    document.documentElement.classList.add("dark");
+    const saved = localStorage.getItem("studywiz_theme");
+    if (saved === "light") {
+      document.documentElement.classList.remove("dark");
+    } else {
+      document.documentElement.classList.add("dark");
+    }
   }, []);
 
   const renderContent = () => {
