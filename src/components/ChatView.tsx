@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Send, Bot, Sparkles, FileText, Loader2, User, Upload, Camera, Image, Paperclip, X, Copy, Check } from "lucide-react";
+import { Send, Bot, Sparkles, FileText, Loader2, User, Upload, Camera, Image, HardDrive, X, Copy, Check } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import { extractAllFilesContent } from "@/lib/fileExtractor";
 import { extractTextFromImage, isImageFile } from "@/lib/imageExtractor";
 import { useAuth } from "@/contexts/AuthContext";
 import { saveChatSession, type ChatMessage } from "@/lib/firestoreService";
+import { openDrivePicker, isGoogleDriveConfigured } from "@/lib/googleDrivePicker";
 
 interface Message {
   id: string;
@@ -120,6 +121,26 @@ export const ChatView = ({
       }
       return prev.filter(a => a.id !== id);
     });
+  };
+
+  const handleDrivePick = async () => {
+    setIsAttachMenuOpen(false);
+    try {
+      const file = await openDrivePicker();
+      if (file) {
+        const isImg = file.type.startsWith("image/");
+        const newAttachment: AttachmentPreview = {
+          id: `attach-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          name: file.name,
+          type: isImg ? "image" : "file",
+          url: isImg ? URL.createObjectURL(file) : undefined,
+          file,
+        };
+        setAttachments(prev => [...prev, newAttachment]);
+      }
+    } catch (err: any) {
+      console.error("Drive picker error:", err);
+    }
   };
 
   const handleCopy = async (msgId: string, content: string) => {
@@ -595,6 +616,18 @@ export const ChatView = ({
                     <p className="text-xs text-muted-foreground">From device</p>
                   </div>
                 </button>
+                {isGoogleDriveConfigured && (
+                  <button
+                    onClick={handleDrivePick}
+                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-secondary transition-colors text-left"
+                  >
+                    <HardDrive className="w-5 h-5 text-primary" />
+                    <div>
+                      <p className="text-sm font-medium">From Drive</p>
+                      <p className="text-xs text-muted-foreground">Google Drive</p>
+                    </div>
+                  </button>
+                )}
               </div>
             </PopoverContent>
           </Popover>
