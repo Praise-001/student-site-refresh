@@ -11,6 +11,8 @@ import {
 } from "@/components/ui/popover";
 import { extractAllFilesContent } from "@/lib/fileExtractor";
 import { extractTextFromImage, isImageFile } from "@/lib/imageExtractor";
+import { useAuth } from "@/contexts/AuthContext";
+import { saveChatSession, type ChatMessage } from "@/lib/firestoreService";
 
 interface Message {
   id: string;
@@ -41,6 +43,7 @@ export const ChatView = ({
   onFilesChange,
   onExtractedContent
 }: ChatViewProps) => {
+  const { user } = useAuth();
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -49,6 +52,7 @@ export const ChatView = ({
   const [attachments, setAttachments] = useState<AttachmentPreview[]>([]);
   const [isAttachMenuOpen, setIsAttachMenuOpen] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [sessionId] = useState(() => `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -250,7 +254,21 @@ export const ChatView = ({
         timestamp: new Date(),
       };
 
-      setMessages(prev => [...prev, assistantMessage]);
+      setMessages(prev => {
+        const updated = [...prev, assistantMessage];
+        // Persist chat session to Firestore
+        if (user) {
+          const chatMsgs: ChatMessage[] = updated.map(m => ({
+            role: m.role,
+            content: m.content,
+            timestamp: m.timestamp.toISOString(),
+          }));
+          saveChatSession(user.uid, sessionId, chatMsgs).catch(err =>
+            console.error('Failed to save chat session:', err)
+          );
+        }
+        return updated;
+      });
     } catch (error: any) {
       console.error("Chat error:", error);
       const errorMessage: Message = {

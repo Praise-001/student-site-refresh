@@ -5,6 +5,8 @@ import { GeneratorPanel, GeneratedQuizData } from "@/components/GeneratorPanel";
 import { PracticeView } from "@/components/PracticeView";
 import { ChatView } from "@/components/ChatView";
 import { HistoryView } from "@/components/HistoryView";
+import { useAuth } from "@/contexts/AuthContext";
+import { saveFileMetadata } from "@/lib/firestoreService";
 
 type Tab = "generate" | "practice" | "chat" | "history";
 
@@ -14,6 +16,7 @@ export interface SharedFileState {
 }
 
 const Index = () => {
+  const { user } = useAuth();
   const [activeTab, setActiveTab] = useState<Tab>("generate");
   const [quizData, setQuizData] = useState<GeneratedQuizData | null>(null);
 
@@ -31,6 +34,15 @@ const Index = () => {
     // Clear extracted content when files change - it will be re-extracted when needed
     if (files.length === 0) {
       setExtractedContent("");
+    }
+    // Save file metadata to Firestore
+    if (user && files.length > 0) {
+      saveFileMetadata(user.uid, files.map(f => ({
+        name: f.name,
+        size: f.size,
+        type: f.type,
+        uploadedAt: new Date().toISOString(),
+      }))).catch(err => console.error('Failed to save file metadata:', err));
     }
   };
 

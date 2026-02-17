@@ -1,14 +1,25 @@
 import { useState, useEffect } from "react";
 import { History, FileText, Trophy, Target, Calendar } from "lucide-react";
-import { getQuizHistory, QuizHistoryEntry } from "@/lib/quizHistory";
+import { getQuizHistoryWithSync, QuizHistoryEntry } from "@/lib/quizHistory";
+import { migrateLocalQuizHistory } from "@/lib/firestoreService";
+import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 
 export const HistoryView = () => {
   const [history, setHistory] = useState<QuizHistoryEntry[]>([]);
+  const { user } = useAuth();
 
   useEffect(() => {
-    setHistory(getQuizHistory());
-  }, []);
+    const loadHistory = async () => {
+      // Migrate localStorage data to Firestore on first load
+      if (user) {
+        await migrateLocalQuizHistory(user.uid);
+      }
+      const data = await getQuizHistoryWithSync(user?.uid ?? null);
+      setHistory(data);
+    };
+    loadHistory();
+  }, [user]);
 
   const formatDate = (iso: string) => {
     const d = new Date(iso);

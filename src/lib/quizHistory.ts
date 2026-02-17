@@ -44,3 +44,33 @@ export function deleteQuizEntry(id: string): void {
   const history = getQuizHistory().filter(e => e.id !== id);
   localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
 }
+
+// ── Firestore-synced wrappers ──
+
+import { saveQuizToFirestore, getQuizHistoryFromFirestore } from './firestoreService';
+
+export async function saveQuizResultWithSync(
+  entry: Omit<QuizHistoryEntry, 'id' | 'completedAt'>,
+  uid: string | null
+): Promise<QuizHistoryEntry> {
+  const saved = saveQuizResult(entry);
+  if (uid) {
+    try {
+      await saveQuizToFirestore(uid, saved);
+    } catch (err) {
+      console.error('Failed to sync quiz to Firestore:', err);
+    }
+  }
+  return saved;
+}
+
+export async function getQuizHistoryWithSync(uid: string | null): Promise<QuizHistoryEntry[]> {
+  if (uid) {
+    try {
+      return await getQuizHistoryFromFirestore(uid);
+    } catch (err) {
+      console.error('Failed to fetch from Firestore, using local:', err);
+    }
+  }
+  return getQuizHistory();
+}

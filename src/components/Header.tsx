@@ -1,4 +1,5 @@
-import { BookOpen, MessageCircle, History, Settings, Sun, Moon } from "lucide-react";
+import { BookOpen, MessageCircle, History, Settings, Sun, Moon, LogOut, User } from "lucide-react";
+import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -27,6 +28,7 @@ const tabs = [
 
 export const Header = ({ activeTab, onTabChange }: HeaderProps) => {
   const { theme, setTheme } = useTheme();
+  const { user, username, signOut } = useAuth();
 
   return (
     <header className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/80 backdrop-blur-xl">
@@ -69,7 +71,10 @@ export const Header = ({ activeTab, onTabChange }: HeaderProps) => {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48">
-              <DropdownMenuLabel>Settings</DropdownMenuLabel>
+              <DropdownMenuLabel className="flex items-center gap-2">
+                <User className="w-4 h-4" />
+                <span className="truncate">{username || user?.email || "User"}</span>
+              </DropdownMenuLabel>
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
@@ -86,6 +91,14 @@ export const Header = ({ activeTab, onTabChange }: HeaderProps) => {
                     <span>Dark Mode</span>
                   </>
                 )}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={() => signOut()}
+                className="flex items-center gap-2 cursor-pointer text-destructive focus:text-destructive"
+              >
+                <LogOut className="w-4 h-4" />
+                <span>Sign Out</span>
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

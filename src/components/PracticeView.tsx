@@ -5,7 +5,8 @@ import { Input } from "@/components/ui/input";
 import { GeneratedQuizData, Question } from "./GeneratorPanel";
 import { MathText } from "./MathRenderer";
 import { cn } from "@/lib/utils";
-import { saveQuizResult } from "@/lib/quizHistory";
+import { saveQuizResultWithSync } from "@/lib/quizHistory";
+import { useAuth } from "@/contexts/AuthContext";
 
 interface UserAnswer {
   questionIndex: number;
@@ -20,6 +21,7 @@ interface PracticeViewProps {
 }
 
 export const PracticeView = ({ quizData, onGoToGenerate }: PracticeViewProps) => {
+  const { user } = useAuth();
   const [isPracticing, setIsPracticing] = useState(false);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [selectedAnswer, setSelectedAnswer] = useState<number | null>(null);
@@ -106,7 +108,7 @@ export const PracticeView = ({ quizData, onGoToGenerate }: PracticeViewProps) =>
       if (quizData) {
         const finalScore = score;
         const total = questions.length;
-        saveQuizResult({
+        saveQuizResultWithSync({
           sourceFiles: quizData.files.map(f => f.name),
           questionCount: total,
           difficulty: quizData.difficulty,
@@ -114,7 +116,7 @@ export const PracticeView = ({ quizData, onGoToGenerate }: PracticeViewProps) =>
           score: finalScore,
           totalQuestions: total,
           percentage: Math.round((finalScore / total) * 100),
-        });
+        }, user?.uid ?? null);
       }
     }
   };
