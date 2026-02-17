@@ -42,7 +42,7 @@ export const GeneratorPanel = ({
   onFilesChange,
   onExtractedContent
 }: GeneratorPanelProps) => {
-  const [selectedTypes, setSelectedTypes] = useState<string[]>(["multiple-choice", "fill-blank"]);
+  const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
   const [questionCount, setQuestionCount] = useState(20);
   const [difficulty, setDifficulty] = useState("medium");
   const [isGenerating, setIsGenerating] = useState(false);
@@ -157,14 +157,22 @@ export const GeneratorPanel = ({
       {/* Step 2: Question Types */}
       <section className="space-y-4">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center text-primary font-semibold text-sm">
+          <div className={`w-8 h-8 rounded-full flex items-center justify-center font-semibold text-sm transition-colors duration-300 ${
+            files.length > 0 ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground"
+          }`}>
             2
           </div>
-          <h2 className="text-lg font-semibold text-foreground">Choose question types</h2>
+          <h2 className={`text-lg font-semibold transition-colors duration-300 ${
+            files.length > 0 ? "text-foreground" : "text-muted-foreground"
+          }`}>
+            Choose question types
+          </h2>
         </div>
         <QuestionTypeSelector
           selectedTypes={selectedTypes}
           onToggle={handleToggleType}
+          disabled={files.length === 0}
+          unlocked={files.length > 0}
         />
       </section>
 
