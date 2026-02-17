@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Send, Bot, Sparkles, FileText, Loader2, User, Upload, Camera, Image, HardDrive, Paperclip, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -372,6 +373,7 @@ export const ChatView = ({
                   <div className="text-sm p-4">
                     {msg.role === "assistant" ? (
                       <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
                         components={{
                           h1: ({ children }) => <h1 className="text-lg font-bold mt-3 mb-1">{children}</h1>,
                           h2: ({ children }) => <h2 className="text-base font-bold mt-3 mb-1">{children}</h2>,
@@ -383,6 +385,16 @@ export const ChatView = ({
                           ol: ({ children }) => <ol className="list-decimal pl-4 mb-2 space-y-1">{children}</ol>,
                           li: ({ children }) => <li>{children}</li>,
                           hr: () => <hr className="my-3 border-border/50" />,
+                          table: ({ children }) => (
+                            <div className="overflow-x-auto my-3">
+                              <table className="w-full border-collapse text-sm">{children}</table>
+                            </div>
+                          ),
+                          thead: ({ children }) => <thead className="bg-primary/10">{children}</thead>,
+                          tbody: ({ children }) => <tbody>{children}</tbody>,
+                          tr: ({ children }) => <tr className="border-b border-border/30">{children}</tr>,
+                          th: ({ children }) => <th className="px-3 py-2 text-left font-semibold border border-border/30">{children}</th>,
+                          td: ({ children }) => <td className="px-3 py-2 border border-border/30">{children}</td>,
                           code: ({ children, className }) => {
                             const isBlock = className?.includes("language-");
                             return isBlock ? (
