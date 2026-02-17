@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { Send, Bot, Sparkles, FileText, Loader2, User, Upload, Camera, Image, HardDrive, Paperclip, X } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -368,7 +369,36 @@ export const ChatView = ({
                   </div>
                 )}
                 {msg.content && (
-                  <p className="text-sm whitespace-pre-wrap p-4">{msg.content}</p>
+                  <div className="text-sm p-4">
+                    {msg.role === "assistant" ? (
+                      <ReactMarkdown
+                        components={{
+                          h1: ({ children }) => <h1 className="text-lg font-bold mt-3 mb-1">{children}</h1>,
+                          h2: ({ children }) => <h2 className="text-base font-bold mt-3 mb-1">{children}</h2>,
+                          h3: ({ children }) => <h3 className="text-sm font-bold mt-2 mb-1">{children}</h3>,
+                          p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                          strong: ({ children }) => <strong className="font-bold">{children}</strong>,
+                          em: ({ children }) => <em className="italic">{children}</em>,
+                          ul: ({ children }) => <ul className="list-disc pl-4 mb-2 space-y-1">{children}</ul>,
+                          ol: ({ children }) => <ol className="list-decimal pl-4 mb-2 space-y-1">{children}</ol>,
+                          li: ({ children }) => <li>{children}</li>,
+                          hr: () => <hr className="my-3 border-border/50" />,
+                          code: ({ children, className }) => {
+                            const isBlock = className?.includes("language-");
+                            return isBlock ? (
+                              <pre className="bg-black/20 rounded-lg p-3 my-2 overflow-x-auto"><code className="text-xs">{children}</code></pre>
+                            ) : (
+                              <code className="bg-black/20 px-1.5 py-0.5 rounded text-xs">{children}</code>
+                            );
+                          },
+                        }}
+                      >
+                        {msg.content}
+                      </ReactMarkdown>
+                    ) : (
+                      <p className="whitespace-pre-wrap">{msg.content}</p>
+                    )}
+                  </div>
                 )}
               </div>
               {msg.role === "user" && (
