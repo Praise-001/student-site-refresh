@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Check, ListChecks, TextCursorInput, Shuffle, Brain, Lock } from "lucide-react";
+import { Check, ListChecks, TextCursorInput, Shuffle, Brain } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface QuestionType {
@@ -68,16 +68,6 @@ export const QuestionTypeSelector = ({
 
   return (
     <div className="relative">
-      {/* Lock overlay when disabled */}
-      {disabled && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-background/60 backdrop-blur-[2px]">
-          <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-muted/80 border border-border/50">
-            <Lock className="w-4 h-4 text-muted-foreground" />
-            <span className="text-sm text-muted-foreground">Upload a file first</span>
-          </div>
-        </div>
-      )}
-
       <div className="grid grid-cols-2 gap-3">
         {QUESTION_TYPES.map((type, index) => {
           const isSelected = selectedTypes.includes(type.id);

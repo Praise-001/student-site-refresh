@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Send, Bot, Sparkles, FileText, Loader2, User, Upload, Camera, Image, HardDrive, Paperclip, X, Copy, Check } from "lucide-react";
+import { Send, Bot, Sparkles, FileText, Loader2, User, Upload, Camera, Image, Paperclip, X, Copy, Check } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
@@ -593,21 +593,6 @@ export const ChatView = ({
                   <div>
                     <p className="text-sm font-medium">Upload Image</p>
                     <p className="text-xs text-muted-foreground">From device</p>
-                  </div>
-                </button>
-                <button
-                  onClick={() => {
-                    // Google Drive integration would require OAuth
-                    // For now, show a message or open file picker
-                    fileInputRef.current?.click();
-                    setIsAttachMenuOpen(false);
-                  }}
-                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-secondary transition-colors text-left"
-                >
-                  <HardDrive className="w-5 h-5 text-primary" />
-                  <div>
-                    <p className="text-sm font-medium">From Drive</p>
-                    <p className="text-xs text-muted-foreground">Cloud storage</p>
                   </div>
                 </button>
               </div>
