@@ -139,17 +139,31 @@ export const ChatView = ({
   const handleSend = async () => {
     if ((!message.trim() && attachments.length === 0) || isLoading) return;
 
-    // Process attachments - add document files to main files for context
+    // Track the context we'll send to the API — start with existing content
+    let contextForApi = extractedContent;
+
+    // Process attachments - extract document text and use it immediately
     const documentAttachments = attachments.filter(a => a.type === "file");
     if (documentAttachments.length > 0) {
-      const newFiles = [...files, ...documentAttachments.map(a => a.file)];
-      onFilesChange(newFiles);
-      // Re-extract content with new files
+      setIsExtracting(true);
       try {
+        const newFiles = [...files, ...documentAttachments.map(a => a.file)];
+        onFilesChange(newFiles);
         const extracted = await extractAllFilesContent(newFiles);
+        contextForApi = extracted.combinedText;
         onExtractedContent(extracted.combinedText);
       } catch (error) {
         console.error("Failed to extract content:", error);
+        // If extraction fails for new files, try extracting just the new attachments
+        try {
+          const extracted = await extractAllFilesContent(documentAttachments.map(a => a.file));
+          // Append new content to existing context
+          contextForApi = (extractedContent ? extractedContent + "\n\n" : "") + extracted.combinedText;
+        } catch {
+          // Last resort: keep existing context
+        }
+      } finally {
+        setIsExtracting(false);
       }
     }
 
@@ -200,7 +214,7 @@ export const ChatView = ({
         fullMessage = imageContent + (fullMessage ? "\n\n" + fullMessage : "");
       }
 
-      // Add document attachment info (if any)
+      // Add document attachment names as context
       if (documentAttachments.length > 0) {
         const docInfo = documentAttachments
           .map(a => `[Attached document: ${a.name}]`)
@@ -215,7 +229,7 @@ export const ChatView = ({
         },
         body: JSON.stringify({
           message: fullMessage,
-          context: extractedContent,
+          context: contextForApi,
           history: messages.slice(-10).map(m => ({
             role: m.role,
             content: m.content
