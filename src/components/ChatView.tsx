@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Send, Bot, Sparkles, FileText, Loader2, User, Upload, Camera, Image, HardDrive, Paperclip, X } from "lucide-react";
+import { Send, Bot, Sparkles, FileText, Loader2, User, Upload, Camera, Image, HardDrive, Paperclip, X, Copy, Check } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
@@ -48,6 +48,7 @@ export const ChatView = ({
   const [ocrProgress, setOcrProgress] = useState<string>("");
   const [attachments, setAttachments] = useState<AttachmentPreview[]>([]);
   const [isAttachMenuOpen, setIsAttachMenuOpen] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -115,6 +116,24 @@ export const ChatView = ({
       }
       return prev.filter(a => a.id !== id);
     });
+  };
+
+  const handleCopy = async (msgId: string, content: string) => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopiedId(msgId);
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch {
+      // Fallback for older browsers
+      const textarea = document.createElement("textarea");
+      textarea.value = content;
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+      setCopiedId(msgId);
+      setTimeout(() => setCopiedId(null), 2000);
+    }
   };
 
   const handleSend = async () => {
@@ -410,6 +429,27 @@ export const ChatView = ({
                     ) : (
                       <p className="whitespace-pre-wrap">{msg.content}</p>
                     )}
+                  </div>
+                )}
+                {msg.role === "assistant" && msg.content && (
+                  <div className="px-4 pb-2 flex justify-end">
+                    <button
+                      onClick={() => handleCopy(msg.id, msg.content)}
+                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs text-muted-foreground hover:text-foreground hover:bg-secondary/80 transition-all"
+                      title="Copy response"
+                    >
+                      {copiedId === msg.id ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-green-500" />
+                          <span className="text-green-500">Copied</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Copy</span>
+                        </>
+                      )}
+                    </button>
                   </div>
                 )}
               </div>
