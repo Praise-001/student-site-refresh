@@ -9,7 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/contexts/AuthContext";
 
 const Landing = () => {
-  const { user, loading, signIn, signUp } = useAuth();
+  const { user, loading, firebaseReady, signIn, signUp } = useAuth();
   const navigate = useNavigate();
 
   const [email, setEmail] = useState("");
@@ -24,10 +24,11 @@ const Landing = () => {
   }, []);
 
   useEffect(() => {
-    if (!loading && user) {
+    // If Firebase isn't configured or user is already logged in, go to app
+    if (!loading && (user || !firebaseReady)) {
       navigate("/", { replace: true });
     }
-  }, [user, loading, navigate]);
+  }, [user, loading, firebaseReady, navigate]);
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();

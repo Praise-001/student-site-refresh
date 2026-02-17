@@ -13,10 +13,15 @@ import {
 import { db } from './firebase';
 import type { QuizHistoryEntry } from './quizHistory';
 
+function getDb() {
+  if (!db) throw new Error('Firestore is not configured');
+  return db;
+}
+
 // ── Quiz History ──
 
 export async function saveQuizToFirestore(uid: string, entry: QuizHistoryEntry): Promise<void> {
-  await setDoc(doc(db, 'users', uid, 'quizHistory', entry.id), {
+  await setDoc(doc(getDb(), 'users', uid, 'quizHistory', entry.id), {
     ...entry,
     savedAt: serverTimestamp(),
   });
@@ -24,7 +29,7 @@ export async function saveQuizToFirestore(uid: string, entry: QuizHistoryEntry):
 
 export async function getQuizHistoryFromFirestore(uid: string): Promise<QuizHistoryEntry[]> {
   const q = query(
-    collection(db, 'users', uid, 'quizHistory'),
+    collection(getDb(), 'users', uid, 'quizHistory'),
     orderBy('completedAt', 'desc')
   );
   const snap = await getDocs(q);
@@ -32,12 +37,12 @@ export async function getQuizHistoryFromFirestore(uid: string): Promise<QuizHist
 }
 
 export async function deleteQuizFromFirestore(uid: string, quizId: string): Promise<void> {
-  await deleteDoc(doc(db, 'users', uid, 'quizHistory', quizId));
+  await deleteDoc(doc(getDb(), 'users', uid, 'quizHistory', quizId));
 }
 
 export async function clearQuizHistoryFromFirestore(uid: string): Promise<void> {
-  const snap = await getDocs(collection(db, 'users', uid, 'quizHistory'));
-  const batch = writeBatch(db);
+  const snap = await getDocs(collection(getDb(), 'users', uid, 'quizHistory'));
+  const batch = writeBatch(getDb());
   snap.docs.forEach(d => batch.delete(d.ref));
   await batch.commit();
 }
@@ -62,9 +67,9 @@ export async function migrateLocalQuizHistory(uid: string): Promise<void> {
       return;
     }
 
-    const batch = writeBatch(db);
+    const batch = writeBatch(getDb());
     entries.forEach(entry => {
-      const ref = doc(db, 'users', uid, 'quizHistory', entry.id);
+      const ref = doc(getDb(), 'users', uid, 'quizHistory', entry.id);
       batch.set(ref, { ...entry, savedAt: serverTimestamp() });
     });
     await batch.commit();
@@ -94,7 +99,7 @@ export async function saveChatSession(
   sessionId: string,
   messages: ChatMessage[]
 ): Promise<void> {
-  const ref = doc(db, 'users', uid, 'chatSessions', sessionId);
+  const ref = doc(getDb(), 'users', uid, 'chatSessions', sessionId);
   const existing = await getDoc(ref);
 
   await setDoc(ref, {
@@ -107,7 +112,7 @@ export async function saveChatSession(
 
 export async function getChatSessions(uid: string): Promise<ChatSession[]> {
   const q = query(
-    collection(db, 'users', uid, 'chatSessions'),
+    collection(getDb(), 'users', uid, 'chatSessions'),
     orderBy('updatedAt', 'desc')
   );
   const snap = await getDocs(q);
@@ -115,7 +120,7 @@ export async function getChatSessions(uid: string): Promise<ChatSession[]> {
 }
 
 export async function deleteChatSession(uid: string, sessionId: string): Promise<void> {
-  await deleteDoc(doc(db, 'users', uid, 'chatSessions', sessionId));
+  await deleteDoc(doc(getDb(), 'users', uid, 'chatSessions', sessionId));
 }
 
 // ── File Metadata ──
@@ -128,10 +133,10 @@ export interface FileMetadataEntry {
 }
 
 export async function saveFileMetadata(uid: string, files: FileMetadataEntry[]): Promise<void> {
-  const batch = writeBatch(db);
+  const batch = writeBatch(getDb());
   files.forEach(file => {
     const id = `file_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const ref = doc(db, 'users', uid, 'fileMetadata', id);
+    const ref = doc(getDb(), 'users', uid, 'fileMetadata', id);
     batch.set(ref, { ...file, savedAt: serverTimestamp() });
   });
   await batch.commit();
@@ -139,7 +144,7 @@ export async function saveFileMetadata(uid: string, files: FileMetadataEntry[]):
 
 export async function getFileMetadata(uid: string): Promise<FileMetadataEntry[]> {
   const q = query(
-    collection(db, 'users', uid, 'fileMetadata'),
+    collection(getDb(), 'users', uid, 'fileMetadata'),
     orderBy('uploadedAt', 'desc')
   );
   const snap = await getDocs(q);

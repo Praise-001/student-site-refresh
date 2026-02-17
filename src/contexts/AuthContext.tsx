@@ -7,12 +7,13 @@ import {
   signOut as firebaseSignOut,
 } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
-import { auth, db } from '@/lib/firebase';
+import { auth, db, isFirebaseConfigured } from '@/lib/firebase';
 
 interface AuthContextType {
   user: User | null;
   username: string | null;
   loading: boolean;
+  firebaseReady: boolean;
   signUp: (email: string, password: string, username?: string) => Promise<void>;
   signIn: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
@@ -36,9 +37,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // If Firebase isn't configured, skip auth entirely — let users through
+    if (!isFirebaseConfigured || !auth) {
+      setLoading(false);
+      return;
+    }
+
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       setUser(firebaseUser);
-      if (firebaseUser) {
+      if (firebaseUser && db) {
         try {
           const profileDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
           if (profileDoc.exists()) {
@@ -56,6 +63,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signUp = async (email: string, password: string, desiredUsername?: string) => {
+    if (!auth || !db) throw new Error('Firebase is not configured');
     const cred = await createUserWithEmailAndPassword(auth, email, password);
     const uname = desiredUsername?.trim() || generateUsername();
     await setDoc(doc(db, 'users', cred.user.uid), {
@@ -67,17 +75,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signIn = async (email: string, password: string) => {
+    if (!auth) throw new Error('Firebase is not configured');
     await signInWithEmailAndPassword(auth, email, password);
   };
 
   const signOut = async () => {
+    if (!auth) return;
     await firebaseSignOut(auth);
     setUser(null);
     setUsername(null);
   };
 
   return (
-    <AuthContext.Provider value={{ user, username, loading, signUp, signIn, signOut }}>
+    <AuthContext.Provider value={{ user, username, loading, firebaseReady: isFirebaseConfigured, signUp, signIn, signOut }}>
       {children}
     </AuthContext.Provider>
   );
