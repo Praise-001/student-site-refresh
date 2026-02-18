@@ -74,177 +74,133 @@ function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(word => word.length > 0).length;
 }
 
-// Convert PDF page to image for OCR
-async function pdfPageToImage(page: any, scale: number = 2.0): Promise<string> {
+// Convert PDF page to image for OCR — uses 1.5x scale for speed
+async function pdfPageToImage(page: any): Promise<string> {
+  const scale = 1.5;
   const viewport = page.getViewport({ scale });
   const canvas = document.createElement('canvas');
   const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) throw new Error('Failed to create canvas context');
 
-  if (!context) {
-    throw new Error('Failed to create canvas context');
-  }
-
-  // Limit canvas size to prevent memory issues (max 4000x4000)
-  const maxDimension = 4000;
+  // Cap at 2500px to avoid memory/speed issues
+  const maxDimension = 2500;
   let finalScale = scale;
   if (viewport.width > maxDimension || viewport.height > maxDimension) {
     const scaleDown = Math.min(maxDimension / viewport.width, maxDimension / viewport.height);
     finalScale = scale * scaleDown;
-    const newViewport = page.getViewport({ scale: finalScale });
-    canvas.height = newViewport.height;
-    canvas.width = newViewport.width;
-
-    await page.render({
-      canvasContext: context,
-      viewport: newViewport,
-    }).promise;
-  } else {
-    canvas.height = viewport.height;
-    canvas.width = viewport.width;
-
-    await page.render({
-      canvasContext: context,
-      viewport: viewport,
-    }).promise;
   }
-
-  // Use JPEG for smaller file size, better for OCR with white backgrounds
-  return canvas.toDataURL('image/jpeg', 0.95);
+  const finalViewport = page.getViewport({ scale: finalScale });
+  canvas.width = finalViewport.width;
+  canvas.height = finalViewport.height;
+  await page.render({ canvasContext: context, viewport: finalViewport }).promise;
+  return canvas.toDataURL('image/jpeg', 0.85);
 }
 
-// Perform OCR on a single image using persistent worker
-async function performOCR(imageDataUrl: string, retries: number = 1): Promise<string> {
+// Perform OCR — no retries, fail fast
+async function performOCR(imageDataUrl: string): Promise<string> {
   const worker = await getTesseractWorker();
-  let lastError: any = null;
-
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      const result = await worker.recognize(imageDataUrl);
-
-      // Check if we got valid text
-      if (result?.data?.text) {
-        return result.data.text;
-      }
-
-      console.log(`OCR attempt ${attempt + 1} returned empty result`);
-    } catch (error: any) {
-      lastError = error;
-      console.error(`OCR attempt ${attempt + 1} failed:`, error?.message || error);
-
-      if (attempt < retries) {
-        await new Promise(resolve => setTimeout(resolve, 300));
-      }
-    }
-  }
-
-  throw lastError || new Error('OCR failed after all retries');
+  const result = await worker.recognize(imageDataUrl);
+  return result?.data?.text || '';
 }
 
-// Extract text from PDF with OCR fallback for scanned documents
+// Pick up to maxPages representative pages from a PDF (beginning, middle, end)
+function samplePageNumbers(totalPages: number, maxPages: number): number[] {
+  if (totalPages <= maxPages) {
+    return Array.from({ length: totalPages }, (_, i) => i + 1);
+  }
+  const pages = new Set<number>();
+  // Always include first 3 and last 2
+  for (let i = 1; i <= Math.min(3, totalPages); i++) pages.add(i);
+  for (let i = Math.max(1, totalPages - 1); i <= totalPages; i++) pages.add(i);
+  // Fill remaining slots evenly from the middle
+  const step = Math.floor(totalPages / (maxPages - pages.size + 1));
+  for (let p = step; p <= totalPages && pages.size < maxPages; p += step) {
+    pages.add(p);
+  }
+  return Array.from(pages).sort((a, b) => a - b);
+}
+
+// Extract text from PDF — fast text extraction first, limited OCR as fallback
 async function extractFromPDF(file: File, onProgress?: OCRProgressCallback): Promise<string> {
   const arrayBuffer = await file.arrayBuffer();
 
-  try {
-    const loadingTask = pdfjsLib.getDocument({
-      data: arrayBuffer,
+  // Hard 8-second timeout wrapper
+  const withTimeout = <T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> =>
+    Promise.race([
+      promise,
+      new Promise<T>(resolve => setTimeout(() => resolve(fallback), ms))
+    ]);
+
+  const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+  const pdf = await loadingTask.promise;
+
+  // ── Step 1: Fast native text extraction (usually < 1s) ──
+  let fullText = '';
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
+    const textContent = await page.getTextContent();
+    fullText += textContent.items.map((item: any) => item.str).join(' ') + '\n\n';
+  }
+
+  const trimmedText = fullText.trim();
+  const wordCount = countWords(trimmedText);
+  console.log(`PDF text extraction: ${wordCount} words from ${pdf.numPages} pages`);
+
+  if (wordCount >= 50) {
+    return trimmedText; // Good text — done
+  }
+
+  // ── Step 2: Scanned PDF — OCR a sample of pages (max 8, hard 8s budget) ──
+  console.log('Scanned PDF — running OCR on sampled pages');
+  onProgress?.(0, 'Scanned PDF detected — reading content...');
+
+  const pagesToOCR = samplePageNumbers(pdf.numPages, 8);
+  const ocrResults: { pageNum: number; text: string }[] = [];
+
+  // Process 4 pages in parallel for speed
+  const batchSize = 4;
+  const startTime = Date.now();
+
+  for (let i = 0; i < pagesToOCR.length; i += batchSize) {
+    // Bail out early if we've already used 7s
+    if (Date.now() - startTime > 7000) {
+      console.log('OCR time budget exceeded — using partial results');
+      break;
+    }
+
+    const batch = pagesToOCR.slice(i, i + batchSize);
+    const batchPromises = batch.map(async (pageNum) => {
+      try {
+        const page = await pdf.getPage(pageNum);
+        const imageDataUrl = await pdfPageToImage(page);
+        const text = await withTimeout(performOCR(imageDataUrl), 4000, '');
+        return text.trim() ? { pageNum, text } : null;
+      } catch {
+        return null;
+      }
     });
 
-    const pdf = await loadingTask.promise;
-    let fullText = '';
+    const results = await Promise.all(batchPromises);
+    results.forEach(r => { if (r) ocrResults.push(r); });
 
-    // First, try regular text extraction
-    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-      const page = await pdf.getPage(pageNum);
-      const textContent = await page.getTextContent();
-      const pageText = textContent.items
-        .map((item: any) => item.str)
-        .join(' ');
-      fullText += pageText + '\n\n';
-    }
-
-    const trimmedText = fullText.trim();
-    const wordCount = countWords(trimmedText);
-
-    console.log(`Initial PDF extraction: ${wordCount} words from ${pdf.numPages} pages`);
-
-    // If we got very little text, try OCR
-    if (wordCount < 50 && pdf.numPages > 0) {
-      console.log('PDF has little extractable text, attempting OCR...');
-      onProgress?.(0, 'Scanned PDF detected, initializing OCR...');
-
-      // Pre-initialize the worker to avoid delay on first page
-      await getTesseractWorker();
-
-      const ocrResults: { pageNum: number; text: string }[] = [];
-      let ocrErrors: string[] = [];
-      let completedPages = 0;
-
-      // Process pages in batches of 2 for parallel processing (memory-safe)
-      const batchSize = 2;
-      for (let i = 1; i <= pdf.numPages; i += batchSize) {
-        const batch = [];
-        for (let j = i; j < i + batchSize && j <= pdf.numPages; j++) {
-          batch.push(j);
-        }
-
-        const batchPromises = batch.map(async (pageNum) => {
-          try {
-            const page = await pdf.getPage(pageNum);
-            const imageDataUrl = await pdfPageToImage(page, 2.0); // Reduced scale for speed
-            const pageOcrText = await performOCR(imageDataUrl);
-
-            completedPages++;
-            onProgress?.(
-              (completedPages / pdf.numPages) * 100,
-              `OCR: ${completedPages}/${pdf.numPages} pages done`
-            );
-
-            if (pageOcrText.trim()) {
-              return { pageNum, text: pageOcrText };
-            }
-            return null;
-          } catch (ocrError: any) {
-            const errorMsg = ocrError?.message || String(ocrError);
-            console.error(`OCR failed for page ${pageNum}:`, errorMsg);
-            ocrErrors.push(`Page ${pageNum}: ${errorMsg}`);
-            completedPages++;
-            return null;
-          }
-        });
-
-        const batchResults = await Promise.all(batchPromises);
-        batchResults.forEach(result => {
-          if (result) ocrResults.push(result);
-        });
-      }
-
-      onProgress?.(100, 'OCR complete');
-
-      // Sort by page number and combine
-      ocrResults.sort((a, b) => a.pageNum - b.pageNum);
-      const ocrText = ocrResults
-        .map(r => `[Page ${r.pageNum}]\n${r.text}`)
-        .join('\n\n');
-
-      const ocrWordCount = countWords(ocrText);
-      console.log(`OCR complete: ${ocrWordCount} words from ${ocrResults.length}/${pdf.numPages} pages`);
-
-      if (ocrWordCount > wordCount) {
-        console.log('OCR extracted more text than regular extraction');
-        return ocrText.trim();
-      }
-
-      // If OCR failed completely, log the errors for debugging
-      if (ocrErrors.length > 0 && ocrWordCount === 0) {
-        console.error('All OCR attempts failed:', ocrErrors);
-      }
-    }
-
-    return trimmedText;
-  } catch (error) {
-    console.error('PDF extraction failed:', error);
-    throw error;
+    const done = Math.min(i + batchSize, pagesToOCR.length);
+    onProgress?.(
+      (done / pagesToOCR.length) * 100,
+      `Reading page ${done}/${pagesToOCR.length}...`
+    );
   }
+
+  onProgress?.(100, 'Done');
+
+  if (ocrResults.length === 0) return trimmedText;
+
+  ocrResults.sort((a, b) => a.pageNum - b.pageNum);
+  const ocrText = ocrResults.map(r => `[Page ${r.pageNum}]\n${r.text}`).join('\n\n');
+  const sampled = pagesToOCR.length < pdf.numPages
+    ? `\n\n[Note: ${pdf.numPages}-page document — content sampled from ${pagesToOCR.length} pages]`
+    : '';
+
+  return ocrText + sampled;
 }
 
 // Extract text from DOCX
