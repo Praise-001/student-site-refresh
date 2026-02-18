@@ -30,18 +30,23 @@ async function getTesseractWorker(): Promise<Worker> {
 
   workerInitializing = true;
   try {
-    console.log('Initializing Tesseract worker...');
     tesseractWorker = await createWorker('eng', 1, {
+      logger: () => {}, // Suppress internal Tesseract console logging
       workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
       corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
       langPath: 'https://tessdata.projectnaptha.com/4.0.0',
       cacheMethod: 'readOnly', // Use browser cache
     });
-    console.log('Tesseract worker ready');
     return tesseractWorker;
   } finally {
     workerInitializing = false;
   }
+}
+
+// Pre-warm the Tesseract worker in the background so it's ready when needed.
+// Call this from the app on mount to eliminate cold-start delay on first scanned PDF.
+export function prewarmOCR(): void {
+  getTesseractWorker().catch(() => {}); // fire-and-forget
 }
 
 // OCR progress callback type
@@ -150,46 +155,44 @@ async function extractFromPDF(file: File, onProgress?: OCRProgressCallback): Pro
     return trimmedText; // Good text — done
   }
 
-  // ── Step 2: Scanned PDF — OCR a sample of pages (max 8, hard 8s budget) ──
-  console.log('Scanned PDF — running OCR on sampled pages');
+  // ── Step 2: Scanned PDF — OCR a sample of pages (max 5, hard 9s total cap) ──
   onProgress?.(0, 'Scanned PDF detected — reading content...');
 
-  const pagesToOCR = samplePageNumbers(pdf.numPages, 8);
+  const pagesToOCR = samplePageNumbers(pdf.numPages, 5);
   const ocrResults: { pageNum: number; text: string }[] = [];
 
-  // Process 4 pages in parallel for speed
-  const batchSize = 4;
-  const startTime = Date.now();
+  // Run all batches inside a 9-second hard cap so the function always resolves quickly
+  const runOCRBatches = async (): Promise<void> => {
+    const batchSize = 4;
+    const startTime = Date.now();
 
-  for (let i = 0; i < pagesToOCR.length; i += batchSize) {
-    // Bail out early if we've already used 7s
-    if (Date.now() - startTime > 7000) {
-      console.log('OCR time budget exceeded — using partial results');
-      break;
+    for (let i = 0; i < pagesToOCR.length; i += batchSize) {
+      if (Date.now() - startTime > 7000) break; // 7s soft budget between batches
+
+      const batch = pagesToOCR.slice(i, i + batchSize);
+      const batchPromises = batch.map(async (pageNum) => {
+        try {
+          const page = await pdf.getPage(pageNum);
+          const imageDataUrl = await pdfPageToImage(page);
+          const text = await withTimeout(performOCR(imageDataUrl), 3000, '');
+          return text.trim() ? { pageNum, text } : null;
+        } catch {
+          return null;
+        }
+      });
+
+      const results = await Promise.all(batchPromises);
+      results.forEach(r => { if (r) ocrResults.push(r); });
+
+      const done = Math.min(i + batchSize, pagesToOCR.length);
+      onProgress?.(
+        (done / pagesToOCR.length) * 100,
+        `Scanning page ${done} of ${pagesToOCR.length}...`
+      );
     }
+  };
 
-    const batch = pagesToOCR.slice(i, i + batchSize);
-    const batchPromises = batch.map(async (pageNum) => {
-      try {
-        const page = await pdf.getPage(pageNum);
-        const imageDataUrl = await pdfPageToImage(page);
-        const text = await withTimeout(performOCR(imageDataUrl), 4000, '');
-        return text.trim() ? { pageNum, text } : null;
-      } catch {
-        return null;
-      }
-    });
-
-    const results = await Promise.all(batchPromises);
-    results.forEach(r => { if (r) ocrResults.push(r); });
-
-    const done = Math.min(i + batchSize, pagesToOCR.length);
-    onProgress?.(
-      (done / pagesToOCR.length) * 100,
-      `Reading page ${done}/${pagesToOCR.length}...`
-    );
-  }
-
+  await withTimeout(runOCRBatches(), 9000, undefined);
   onProgress?.(100, 'Done');
 
   if (ocrResults.length === 0) return trimmedText;
