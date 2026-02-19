@@ -108,19 +108,16 @@ async function performOCR(imageDataUrl: string): Promise<string> {
   return result?.data?.text || '';
 }
 
-// Pick up to maxPages representative pages from a PDF (beginning, middle, end)
+// Pick up to maxPages evenly-spaced pages across the whole document
 function samplePageNumbers(totalPages: number, maxPages: number): number[] {
   if (totalPages <= maxPages) {
     return Array.from({ length: totalPages }, (_, i) => i + 1);
   }
   const pages = new Set<number>();
-  // Always include first 3 and last 2
-  for (let i = 1; i <= Math.min(3, totalPages); i++) pages.add(i);
-  for (let i = Math.max(1, totalPages - 1); i <= totalPages; i++) pages.add(i);
-  // Fill remaining slots evenly from the middle
-  const step = Math.floor(totalPages / (maxPages - pages.size + 1));
-  for (let p = step; p <= totalPages && pages.size < maxPages; p += step) {
-    pages.add(p);
+  for (let i = 0; i < maxPages; i++) {
+    // Evenly distribute from page 1 to totalPages (inclusive)
+    const page = Math.round(1 + (i / (maxPages - 1)) * (totalPages - 1));
+    pages.add(Math.max(1, Math.min(totalPages, page)));
   }
   return Array.from(pages).sort((a, b) => a - b);
 }
@@ -139,7 +136,7 @@ async function extractFromPDF(file: File, onProgress?: OCRProgressCallback): Pro
   const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
   const pdf = await loadingTask.promise;
 
-  // ── Step 1: Fast native text extraction (usually < 1s) ──
+  // ── Step 1: Fast native text extraction (usually < 1s even for large PDFs) ──
   let fullText = '';
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
     const page = await pdf.getPage(pageNum);
@@ -149,7 +146,6 @@ async function extractFromPDF(file: File, onProgress?: OCRProgressCallback): Pro
 
   const trimmedText = fullText.trim();
   const wordCount = countWords(trimmedText);
-  console.log(`PDF text extraction: ${wordCount} words from ${pdf.numPages} pages`);
 
   if (wordCount >= 50) {
     return trimmedText; // Good text — done
@@ -174,7 +170,7 @@ async function extractFromPDF(file: File, onProgress?: OCRProgressCallback): Pro
         try {
           const page = await pdf.getPage(pageNum);
           const imageDataUrl = await pdfPageToImage(page);
-          const text = await withTimeout(performOCR(imageDataUrl), 3000, '');
+          const text = await withTimeout(performOCR(imageDataUrl), 5000, '');
           return text.trim() ? { pageNum, text } : null;
         } catch {
           return null;
