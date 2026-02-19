@@ -1,12 +1,13 @@
 import { useState, useEffect } from "react";
 import { Header } from "@/components/Header";
 import { WelcomeHero } from "@/components/WelcomeHero";
-import { GeneratorPanel, GeneratedQuizData } from "@/components/GeneratorPanel";
+import { GeneratorPanel, GeneratedQuizData, Question } from "@/components/GeneratorPanel";
 import { PracticeView } from "@/components/PracticeView";
 import { ChatView } from "@/components/ChatView";
 import { HistoryView } from "@/components/HistoryView";
 import { useAuth } from "@/contexts/AuthContext";
 import { saveFileMetadata } from "@/lib/firestoreService";
+import { initOCRPool } from "@/lib/ocr-pool";
 
 type Tab = "generate" | "practice" | "chat" | "history";
 
@@ -24,18 +25,23 @@ const Index = () => {
   const [sharedFiles, setSharedFiles] = useState<File[]>([]);
   const [extractedContent, setExtractedContent] = useState<string>("");
 
+  /** First batch of questions from generation: switch to Practice tab */
   const handleGenerate = (data: GeneratedQuizData) => {
     setQuizData(data);
     setActiveTab("practice");
   };
 
+  /**
+   * Streaming updates: new questions arrived while OCR continues in background.
+   * Update quizData in-place without switching tabs — user stays where they are.
+   */
+  const handleUpdateQuestions = (questions: Question[]) => {
+    setQuizData(prev => prev ? { ...prev, questions } : prev);
+  };
+
   const handleFilesChange = (files: File[]) => {
     setSharedFiles(files);
-    // Clear extracted content when files change - it will be re-extracted when needed
-    if (files.length === 0) {
-      setExtractedContent("");
-    }
-    // Save file metadata to Firestore
+    if (files.length === 0) setExtractedContent("");
     if (user && files.length > 0) {
       saveFileMetadata(user.uid, files.map(f => ({
         name: f.name,
@@ -60,6 +66,12 @@ const Index = () => {
     }
   }, []);
 
+  // Pre-warm the 3-worker OCR pool 2s after mount so it's ready before any PDF upload
+  useEffect(() => {
+    const t = setTimeout(() => initOCRPool().catch(() => {}), 2000);
+    return () => clearTimeout(t);
+  }, []);
+
   const renderContent = () => {
     switch (activeTab) {
       case "generate":
@@ -68,6 +80,7 @@ const Index = () => {
             <WelcomeHero />
             <GeneratorPanel
               onGenerate={handleGenerate}
+              onUpdateQuestions={handleUpdateQuestions}
               files={sharedFiles}
               onFilesChange={handleFilesChange}
               onExtractedContent={handleExtractedContent}
