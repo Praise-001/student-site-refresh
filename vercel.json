@@ -2,9 +2,6 @@
   "functions": {
     "api/generate-questions.ts": {
       "maxDuration": 60
-    },
-    "api/ocr-page.ts": {
-      "maxDuration": 15
     }
   }
 }

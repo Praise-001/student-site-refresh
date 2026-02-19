@@ -1,6 +1,7 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import mammoth from 'mammoth';
 import JSZip from 'jszip';
+import Tesseract, { createWorker, Worker } from 'tesseract.js';
 import * as CFB from 'cfb';
 
 // For pdfjs-dist v5.x, we need to import the worker directly
@@ -9,6 +10,39 @@ import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 // Set up PDF.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+
+// Persistent Tesseract worker for faster OCR
+let tesseractWorker: Worker | null = null;
+let workerInitializing = false;
+
+async function getTesseractWorker(): Promise<Worker> {
+  if (tesseractWorker) {
+    return tesseractWorker;
+  }
+
+  if (workerInitializing) {
+    // Wait for existing initialization
+    while (workerInitializing) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return tesseractWorker!;
+  }
+
+  workerInitializing = true;
+  try {
+    console.log('Initializing Tesseract worker...');
+    tesseractWorker = await createWorker('eng', 1, {
+      workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
+      corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
+      langPath: 'https://tessdata.projectnaptha.com/4.0.0',
+      cacheMethod: 'readOnly', // Use browser cache
+    });
+    console.log('Tesseract worker ready');
+    return tesseractWorker;
+  } finally {
+    workerInitializing = false;
+  }
+}
 
 // OCR progress callback type
 type OCRProgressCallback = (progress: number, message: string) => void;
@@ -40,126 +74,177 @@ function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(word => word.length > 0).length;
 }
 
-// Convert PDF page to image for OCR — uses 1.5x scale for speed
-async function pdfPageToImage(page: any): Promise<string> {
-  const scale = 1.5;
+// Convert PDF page to image for OCR
+async function pdfPageToImage(page: any, scale: number = 2.0): Promise<string> {
   const viewport = page.getViewport({ scale });
   const canvas = document.createElement('canvas');
   const context = canvas.getContext('2d', { willReadFrequently: true });
-  if (!context) throw new Error('Failed to create canvas context');
 
-  // Cap at 2500px to avoid memory/speed issues
-  const maxDimension = 2500;
+  if (!context) {
+    throw new Error('Failed to create canvas context');
+  }
+
+  // Limit canvas size to prevent memory issues (max 4000x4000)
+  const maxDimension = 4000;
   let finalScale = scale;
   if (viewport.width > maxDimension || viewport.height > maxDimension) {
     const scaleDown = Math.min(maxDimension / viewport.width, maxDimension / viewport.height);
     finalScale = scale * scaleDown;
+    const newViewport = page.getViewport({ scale: finalScale });
+    canvas.height = newViewport.height;
+    canvas.width = newViewport.width;
+
+    await page.render({
+      canvasContext: context,
+      viewport: newViewport,
+    }).promise;
+  } else {
+    canvas.height = viewport.height;
+    canvas.width = viewport.width;
+
+    await page.render({
+      canvasContext: context,
+      viewport: viewport,
+    }).promise;
   }
-  const finalViewport = page.getViewport({ scale: finalScale });
-  canvas.width = finalViewport.width;
-  canvas.height = finalViewport.height;
-  await page.render({ canvasContext: context, viewport: finalViewport }).promise;
-  return canvas.toDataURL('image/jpeg', 0.85);
+
+  // Use JPEG for smaller file size, better for OCR with white backgrounds
+  return canvas.toDataURL('image/jpeg', 0.95);
 }
 
-// Perform OCR via server-side Vision LLM — no cold-start, truly parallel, math-aware
-async function performOCR(imageDataUrl: string): Promise<string> {
-  const base64 = imageDataUrl.split(',')[1]; // strip "data:image/jpeg;base64," prefix
-  try {
-    const res = await fetch('/api/ocr-page', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ imageBase64: base64 }),
-    });
-    if (!res.ok) return '';
-    const { text } = await res.json();
-    return (text as string) || '';
-  } catch {
-    return '';
+// Perform OCR on a single image using persistent worker
+async function performOCR(imageDataUrl: string, retries: number = 1): Promise<string> {
+  const worker = await getTesseractWorker();
+  let lastError: any = null;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const result = await worker.recognize(imageDataUrl);
+
+      // Check if we got valid text
+      if (result?.data?.text) {
+        return result.data.text;
+      }
+
+      console.log(`OCR attempt ${attempt + 1} returned empty result`);
+    } catch (error: any) {
+      lastError = error;
+      console.error(`OCR attempt ${attempt + 1} failed:`, error?.message || error);
+
+      if (attempt < retries) {
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+    }
   }
+
+  throw lastError || new Error('OCR failed after all retries');
 }
 
-// Pick up to maxPages evenly-spaced pages across the whole document
-function samplePageNumbers(totalPages: number, maxPages: number): number[] {
-  if (totalPages <= maxPages) {
-    return Array.from({ length: totalPages }, (_, i) => i + 1);
-  }
-  const pages = new Set<number>();
-  for (let i = 0; i < maxPages; i++) {
-    // Evenly distribute from page 1 to totalPages (inclusive)
-    const page = Math.round(1 + (i / (maxPages - 1)) * (totalPages - 1));
-    pages.add(Math.max(1, Math.min(totalPages, page)));
-  }
-  return Array.from(pages).sort((a, b) => a - b);
-}
-
-// Extract text from PDF — fast text extraction first, limited OCR as fallback
+// Extract text from PDF with OCR fallback for scanned documents
 async function extractFromPDF(file: File, onProgress?: OCRProgressCallback): Promise<string> {
   const arrayBuffer = await file.arrayBuffer();
 
-  // Hard 8-second timeout wrapper
-  const withTimeout = <T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> =>
-    Promise.race([
-      promise,
-      new Promise<T>(resolve => setTimeout(() => resolve(fallback), ms))
-    ]);
+  try {
+    const loadingTask = pdfjsLib.getDocument({
+      data: arrayBuffer,
+    });
 
-  const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
-  const pdf = await loadingTask.promise;
+    const pdf = await loadingTask.promise;
+    let fullText = '';
 
-  // ── Step 1: Fast native text extraction (usually < 1s even for large PDFs) ──
-  let fullText = '';
-  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-    const page = await pdf.getPage(pageNum);
-    const textContent = await page.getTextContent();
-    fullText += textContent.items.map((item: any) => item.str).join(' ') + '\n\n';
-  }
-
-  const trimmedText = fullText.trim();
-  const wordCount = countWords(trimmedText);
-
-  if (wordCount >= 50) {
-    return trimmedText; // Good text — done
-  }
-
-  // ── Step 2: Scanned PDF — render 5 pages + OCR all in parallel via Vision LLM ──
-  onProgress?.(0, 'Scanned PDF detected — reading content...');
-
-  const pagesToOCR = samplePageNumbers(pdf.numPages, 5);
-
-  // All pages are rendered and OCR'd simultaneously (true parallelism — independent HTTP calls)
-  const renderAndOCR = async (pageNum: number, idx: number): Promise<{ pageNum: number; text: string } | null> => {
-    try {
+    // First, try regular text extraction
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
       const page = await pdf.getPage(pageNum);
-      const imageDataUrl = await pdfPageToImage(page);
-      onProgress?.((idx / pagesToOCR.length) * 50, `Reading page ${idx + 1} of ${pagesToOCR.length}...`);
-      const text = await withTimeout(performOCR(imageDataUrl), 12000, '');
-      onProgress?.(50 + ((idx + 1) / pagesToOCR.length) * 50, `Processing page ${idx + 1} of ${pagesToOCR.length}...`);
-      return text.trim() ? { pageNum, text } : null;
-    } catch {
-      return null;
+      const textContent = await page.getTextContent();
+      const pageText = textContent.items
+        .map((item: any) => item.str)
+        .join(' ');
+      fullText += pageText + '\n\n';
     }
-  };
 
-  const ocrResults = (
-    await withTimeout(
-      Promise.all(pagesToOCR.map((pageNum, idx) => renderAndOCR(pageNum, idx))),
-      14000,
-      []
-    )
-  ).filter((r): r is { pageNum: number; text: string } => r !== null);
+    const trimmedText = fullText.trim();
+    const wordCount = countWords(trimmedText);
 
-  onProgress?.(100, 'Done');
+    console.log(`Initial PDF extraction: ${wordCount} words from ${pdf.numPages} pages`);
 
-  if (ocrResults.length === 0) return trimmedText;
+    // If we got very little text, try OCR
+    if (wordCount < 50 && pdf.numPages > 0) {
+      console.log('PDF has little extractable text, attempting OCR...');
+      onProgress?.(0, 'Scanned PDF detected, initializing OCR...');
 
-  ocrResults.sort((a, b) => a.pageNum - b.pageNum);
-  const ocrText = ocrResults.map(r => `[Page ${r.pageNum}]\n${r.text}`).join('\n\n');
-  const sampled = pagesToOCR.length < pdf.numPages
-    ? `\n\n[Note: ${pdf.numPages}-page document — content sampled from ${pagesToOCR.length} pages]`
-    : '';
+      // Pre-initialize the worker to avoid delay on first page
+      await getTesseractWorker();
 
-  return ocrText + sampled;
+      const ocrResults: { pageNum: number; text: string }[] = [];
+      let ocrErrors: string[] = [];
+      let completedPages = 0;
+
+      // Process pages in batches of 2 for parallel processing (memory-safe)
+      const batchSize = 2;
+      for (let i = 1; i <= pdf.numPages; i += batchSize) {
+        const batch = [];
+        for (let j = i; j < i + batchSize && j <= pdf.numPages; j++) {
+          batch.push(j);
+        }
+
+        const batchPromises = batch.map(async (pageNum) => {
+          try {
+            const page = await pdf.getPage(pageNum);
+            const imageDataUrl = await pdfPageToImage(page, 2.0); // Reduced scale for speed
+            const pageOcrText = await performOCR(imageDataUrl);
+
+            completedPages++;
+            onProgress?.(
+              (completedPages / pdf.numPages) * 100,
+              `OCR: ${completedPages}/${pdf.numPages} pages done`
+            );
+
+            if (pageOcrText.trim()) {
+              return { pageNum, text: pageOcrText };
+            }
+            return null;
+          } catch (ocrError: any) {
+            const errorMsg = ocrError?.message || String(ocrError);
+            console.error(`OCR failed for page ${pageNum}:`, errorMsg);
+            ocrErrors.push(`Page ${pageNum}: ${errorMsg}`);
+            completedPages++;
+            return null;
+          }
+        });
+
+        const batchResults = await Promise.all(batchPromises);
+        batchResults.forEach(result => {
+          if (result) ocrResults.push(result);
+        });
+      }
+
+      onProgress?.(100, 'OCR complete');
+
+      // Sort by page number and combine
+      ocrResults.sort((a, b) => a.pageNum - b.pageNum);
+      const ocrText = ocrResults
+        .map(r => `[Page ${r.pageNum}]\n${r.text}`)
+        .join('\n\n');
+
+      const ocrWordCount = countWords(ocrText);
+      console.log(`OCR complete: ${ocrWordCount} words from ${ocrResults.length}/${pdf.numPages} pages`);
+
+      if (ocrWordCount > wordCount) {
+        console.log('OCR extracted more text than regular extraction');
+        return ocrText.trim();
+      }
+
+      // If OCR failed completely, log the errors for debugging
+      if (ocrErrors.length > 0 && ocrWordCount === 0) {
+        console.error('All OCR attempts failed:', ocrErrors);
+      }
+    }
+
+    return trimmedText;
+  } catch (error) {
+    console.error('PDF extraction failed:', error);
+    throw error;
+  }
 }
 
 // Extract text from DOCX
