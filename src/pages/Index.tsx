@@ -7,7 +7,6 @@ import { ChatView } from "@/components/ChatView";
 import { HistoryView } from "@/components/HistoryView";
 import { useAuth } from "@/contexts/AuthContext";
 import { saveFileMetadata } from "@/lib/firestoreService";
-import { prewarmOCR } from "@/lib/fileExtractor";
 
 type Tab = "generate" | "practice" | "chat" | "history";
 
@@ -59,12 +58,6 @@ const Index = () => {
     } else {
       document.documentElement.classList.add("dark");
     }
-  }, []);
-
-  // Pre-warm Tesseract OCR worker in the background so scanned PDFs start instantly
-  useEffect(() => {
-    const t = setTimeout(() => prewarmOCR(), 3000);
-    return () => clearTimeout(t);
   }, []);
 
   const renderContent = () => {

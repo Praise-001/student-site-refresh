@@ -1,7 +1,6 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import mammoth from 'mammoth';
 import JSZip from 'jszip';
-import Tesseract, { createWorker, Worker } from 'tesseract.js';
 import * as CFB from 'cfb';
 
 // For pdfjs-dist v5.x, we need to import the worker directly
@@ -10,44 +9,6 @@ import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 // Set up PDF.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
-
-// Persistent Tesseract worker for faster OCR
-let tesseractWorker: Worker | null = null;
-let workerInitializing = false;
-
-async function getTesseractWorker(): Promise<Worker> {
-  if (tesseractWorker) {
-    return tesseractWorker;
-  }
-
-  if (workerInitializing) {
-    // Wait for existing initialization
-    while (workerInitializing) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-    return tesseractWorker!;
-  }
-
-  workerInitializing = true;
-  try {
-    tesseractWorker = await createWorker('eng', 1, {
-      logger: () => {}, // Suppress internal Tesseract console logging
-      workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
-      corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
-      langPath: 'https://tessdata.projectnaptha.com/4.0.0',
-      cacheMethod: 'readOnly', // Use browser cache
-    });
-    return tesseractWorker;
-  } finally {
-    workerInitializing = false;
-  }
-}
-
-// Pre-warm the Tesseract worker in the background so it's ready when needed.
-// Call this from the app on mount to eliminate cold-start delay on first scanned PDF.
-export function prewarmOCR(): void {
-  getTesseractWorker().catch(() => {}); // fire-and-forget
-}
 
 // OCR progress callback type
 type OCRProgressCallback = (progress: number, message: string) => void;
@@ -101,11 +62,21 @@ async function pdfPageToImage(page: any): Promise<string> {
   return canvas.toDataURL('image/jpeg', 0.85);
 }
 
-// Perform OCR — no retries, fail fast
+// Perform OCR via server-side Vision LLM — no cold-start, truly parallel, math-aware
 async function performOCR(imageDataUrl: string): Promise<string> {
-  const worker = await getTesseractWorker();
-  const result = await worker.recognize(imageDataUrl);
-  return result?.data?.text || '';
+  const base64 = imageDataUrl.split(',')[1]; // strip "data:image/jpeg;base64," prefix
+  try {
+    const res = await fetch('/api/ocr-page', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageBase64: base64 }),
+    });
+    if (!res.ok) return '';
+    const { text } = await res.json();
+    return (text as string) || '';
+  } catch {
+    return '';
+  }
 }
 
 // Pick up to maxPages evenly-spaced pages across the whole document
@@ -151,44 +122,33 @@ async function extractFromPDF(file: File, onProgress?: OCRProgressCallback): Pro
     return trimmedText; // Good text — done
   }
 
-  // ── Step 2: Scanned PDF — OCR a sample of pages (max 5, hard 9s total cap) ──
+  // ── Step 2: Scanned PDF — render 5 pages + OCR all in parallel via Vision LLM ──
   onProgress?.(0, 'Scanned PDF detected — reading content...');
 
   const pagesToOCR = samplePageNumbers(pdf.numPages, 5);
-  const ocrResults: { pageNum: number; text: string }[] = [];
 
-  // Run all batches inside a 9-second hard cap so the function always resolves quickly
-  const runOCRBatches = async (): Promise<void> => {
-    const batchSize = 4;
-    const startTime = Date.now();
-
-    for (let i = 0; i < pagesToOCR.length; i += batchSize) {
-      if (Date.now() - startTime > 7000) break; // 7s soft budget between batches
-
-      const batch = pagesToOCR.slice(i, i + batchSize);
-      const batchPromises = batch.map(async (pageNum) => {
-        try {
-          const page = await pdf.getPage(pageNum);
-          const imageDataUrl = await pdfPageToImage(page);
-          const text = await withTimeout(performOCR(imageDataUrl), 5000, '');
-          return text.trim() ? { pageNum, text } : null;
-        } catch {
-          return null;
-        }
-      });
-
-      const results = await Promise.all(batchPromises);
-      results.forEach(r => { if (r) ocrResults.push(r); });
-
-      const done = Math.min(i + batchSize, pagesToOCR.length);
-      onProgress?.(
-        (done / pagesToOCR.length) * 100,
-        `Scanning page ${done} of ${pagesToOCR.length}...`
-      );
+  // All pages are rendered and OCR'd simultaneously (true parallelism — independent HTTP calls)
+  const renderAndOCR = async (pageNum: number, idx: number): Promise<{ pageNum: number; text: string } | null> => {
+    try {
+      const page = await pdf.getPage(pageNum);
+      const imageDataUrl = await pdfPageToImage(page);
+      onProgress?.((idx / pagesToOCR.length) * 50, `Reading page ${idx + 1} of ${pagesToOCR.length}...`);
+      const text = await withTimeout(performOCR(imageDataUrl), 12000, '');
+      onProgress?.(50 + ((idx + 1) / pagesToOCR.length) * 50, `Processing page ${idx + 1} of ${pagesToOCR.length}...`);
+      return text.trim() ? { pageNum, text } : null;
+    } catch {
+      return null;
     }
   };
 
-  await withTimeout(runOCRBatches(), 9000, undefined);
+  const ocrResults = (
+    await withTimeout(
+      Promise.all(pagesToOCR.map((pageNum, idx) => renderAndOCR(pageNum, idx))),
+      14000,
+      []
+    )
+  ).filter((r): r is { pageNum: number; text: string } => r !== null);
+
   onProgress?.(100, 'Done');
 
   if (ocrResults.length === 0) return trimmedText;
